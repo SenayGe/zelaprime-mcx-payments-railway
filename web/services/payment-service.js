@@ -7,7 +7,8 @@ const { getDatabase } = require("../config/database");
 const gpoClient = require("./gpo-client");
 const shopifyClient = require("./shopify-client");
 
-const APP_URL = (process.env.APP_URL || "https://pay.zelaprime.com").replace(/\/$/, "");
+//const APP_URL = (process.env.APP_URL || "https://pay.zelaprime.com").replace(/\/$/, "");
+const APP_URL = (process.env.APP_URL || "zelaprime-mcx-payments-railway-production.up.railway.app").replace(/\/$/, "");
 
 function normalizeRow(row, columns) {
   if (!row) return row;
