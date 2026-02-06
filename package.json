@@ -1,0 +1,30 @@
+{
+  "name": "mcx-thankyou",
+  "version": "1.0.0",
+  "license": "UNLICENSED",
+  "scripts": {
+    "shopify": "shopify",
+    "build": "shopify app build",
+    "dev": "node web/server.js",
+    "start": "node web/server.js",
+    "info": "shopify app info",
+    "generate": "shopify app generate",
+    "deploy": "shopify app deploy"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.14.0",
+    "@shopify/cli": "3.84.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^5.1.0",
+    "express-rate-limit": "^7.0.0",
+    "uuid": "^9.0.0"
+  },
+  "trustedDependencies": ["@shopify/plugin-cloudflare"],
+  "author": "sg",
+  "private": true,
+  "workspaces": ["extensions/*"]
+}
