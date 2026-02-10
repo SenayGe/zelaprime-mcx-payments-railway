@@ -119,7 +119,7 @@ function parseCallback(payload) {
 
   return {
     reference,
-    status, // SUCCESS, FAILED, EXPIRED, CANCELLED
+    status, // SUCCESS, APPROVED, ACCEPTED, FAILED, EXPIRED, CANCELLED
     amount: Number(amount),
     transactionId: id,
     currency: currency || null,

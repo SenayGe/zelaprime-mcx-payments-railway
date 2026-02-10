@@ -195,7 +195,9 @@ async function processCallback(callbackData, rawPayload) {
   // Update payment status
   const normalizedStatus = String(status).toUpperCase();
   const isPaid =
-    normalizedStatus === "SUCCESS" || normalizedStatus === "APPROVED";
+    normalizedStatus === "SUCCESS" ||
+    normalizedStatus === "APPROVED" ||
+    normalizedStatus === "ACCEPTED";
   const newStatus = isPaid ? "PAID" : normalizedStatus;
   const paidAt = isPaid ? new Date().toISOString() : null;
 
