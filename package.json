@@ -7,6 +7,7 @@
     "build": "shopify app build",
     "dev": "node web/server.js",
     "start": "node web/server.js",
+    "test": "node --test web/tests",
     "info": "shopify app info",
     "generate": "shopify app generate",
     "deploy": "shopify app deploy"

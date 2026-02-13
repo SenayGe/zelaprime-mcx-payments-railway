@@ -17,10 +17,11 @@ router.post("/", async (req, res) => {
     // Get raw body for signature verification (stored by middleware)
     const rawBody = req.rawBody || JSON.stringify(req.body);
     const signature = req.headers["x-gpo-signature"];
+    const referenceHint = getReferenceHint(req.body);
 
     // Verify callback signature
     if (signature && !gpoClient.verifyCallbackSignature(rawBody, signature)) {
-      console.error("Invalid GPO callback signature");
+      console.error(`Invalid GPO callback signature (reference=${referenceHint})`);
       return res.status(401).json({ error: "Invalid signature" });
     }
 
@@ -38,12 +39,29 @@ router.post("/", async (req, res) => {
     // Always return 200 to acknowledge receipt
     return res.status(200).json({ received: true });
   } catch (err) {
-    console.error("Error processing GPO callback:", err);
+    const referenceHint = getReferenceHint(req.body);
+    console.error(`Error processing GPO callback (reference=${referenceHint}):`, err);
 
     // Return 200 anyway to prevent GPO from retrying indefinitely
     // Log the error for investigation
     return res.status(200).json({ received: true, error: err.message });
   }
 });
+
+function getReferenceHint(payload) {
+  if (!payload || typeof payload !== "object") {
+    return "unknown";
+  }
+
+  return (
+    payload.merchantReferenceNumber ||
+    payload.merchantReference ||
+    payload.merchant_reference ||
+    payload.reference?.id ||
+    (typeof payload.reference === "string" ? payload.reference : null) ||
+    payload.referenceId ||
+    "unknown"
+  );
+}
 
 module.exports = router;
