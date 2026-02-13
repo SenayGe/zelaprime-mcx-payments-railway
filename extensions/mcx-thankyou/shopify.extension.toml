@@ -19,6 +19,11 @@ target = "purchase.thank-you.block.render"
 module = "./src/ThankYou.jsx"
 export = "thankYouBlock"
 
+[[extensions.targeting]]
+target = "customer-account.order-status.block.render"
+module = "./src/ThankYou.jsx"
+export = "orderDetailsBlock"
+
 
 
 

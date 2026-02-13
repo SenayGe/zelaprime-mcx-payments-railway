@@ -6,15 +6,14 @@ import {
   Text,
   Button,
   Link,
-  useStorage,
   useApi,
   useSubscription,
+  useOrder,
   Spinner,
   Icon,
   InlineStack,
 } from "@shopify/ui-extensions-react/checkout";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BACKEND_URL } from "./config";
 
 // ====== EXPORTS (Thank You + Order Status blocks) ======
 const thankYouBlock = reactExtension("purchase.thank-you.block.render", () => (
@@ -28,193 +27,50 @@ const orderDetailsBlock = reactExtension(
 );
 export { orderDetailsBlock };
 
+// ====== CONFIG ======
+const BACKEND_URL = "https://zelaprime-mcx-payments-railway-production.up.railway.app";
+
 // ====== THANK YOU PAGE ======
 function MCXThankYou() {
   const { orderConfirmation } = useApi();
   const confirmation = useSubscription(orderConfirmation);
-  const orderId = confirmation?.order?.id;
+  const orderGid = useMemo(
+    () => resolveOrderGid(confirmation?.order?.id),
+    [confirmation?.order?.id]
+  );
 
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [orderData, setOrderData] = useState(null);
-  const [paymentStatus, setPaymentStatus] = useState("PENDING");
-  const [creatingSession, setCreatingSession] = useState(false);
-  const [paymentUrl, setPaymentUrl] = useState(null);
-  const sessionRequestedRef = useRef(false);
+  return <MCXPaymentPanel orderGid={orderGid} waitForOrderId />;
+}
 
-  // Fetch order details
-  useEffect(() => {
-    let live = true;
-    async function fetchOrder() {
-      try {
-        setLoading(true);
-        setError(null);
-        if (!orderId) {
-          await delay(250);
-        }
-        if (!orderId) return;
+// ====== ORDER STATUS PAGE ======
+function MCXOrderStatus() {
+  const order = useOrder();
+  const orderGid = useMemo(() => resolveOrderGid(order?.id), [order?.id]);
 
-        const numericalOrderId = orderId.split("/").pop();
-        const adminApiGid = `gid://shopify/Order/${numericalOrderId}`;
+  return (
+    <MCXPaymentPanel
+      orderGid={orderGid}
+      missingOrderMessage="Não foi possível identificar esta encomenda. Atualize a página ou abra o link de estado da encomenda enviado por email."
+    />
+  );
+}
 
-        const MAX_RETRIES = 6;
-        let attempt = 0;
-        let json = null;
+// ====== Shared UI ======
+function MCXPaymentPanel({ orderGid, waitForOrderId = false, missingOrderMessage }) {
+  const {
+    loading,
+    error,
+    orderData,
+    paymentStatus,
+    creatingSession,
+    paymentUrl,
+    handlePayClick,
+    formattedAmount,
+  } = useMulticaixaPayment(orderGid, {
+    waitForOrderId,
+    missingOrderMessage,
+  });
 
-        while (attempt <= MAX_RETRIES) {
-          const res = await fetch(
-            `${BACKEND_URL}/api/order-total?orderId=${encodeURIComponent(adminApiGid)}`,
-            { method: "GET" }
-          );
-
-          if (res.ok) {
-            json = await res.json();
-            break;
-          }
-
-          let errorText = "";
-          try {
-            errorText = await res.text();
-          } catch {
-            errorText = "";
-          }
-
-          const looksLikeOrderNotReady =
-            res.status === 404 ||
-            errorText.includes("Order not found") ||
-            errorText.includes("order not found");
-
-          if (looksLikeOrderNotReady && attempt < MAX_RETRIES) {
-            await delay(500 * (attempt + 1));
-            attempt += 1;
-            continue;
-          }
-
-          throw new Error(`Backend ${res.status}${errorText ? `: ${errorText}` : ""}`);
-        }
-
-        if (!json) throw new Error("Failed to load order after retries");
-        if (!live) return;
-
-        setOrderData({
-          gid: adminApiGid,
-          name: json.orderName,
-          amount: json.amount,
-          currency: json.currencyCode,
-          financialStatus: json.financialStatus,
-        });
-        setPaymentUrl(null);
-
-        // Update payment status based on financial status
-        if (json.financialStatus === "PAID" || json.financialStatus === "PARTIALLY_PAID") {
-          setPaymentStatus("PAID");
-        } else {
-          setPaymentStatus("PENDING");
-        }
-      } catch (e) {
-        if (live) setError("Falha ao obter dados da encomenda.");
-      } finally {
-        if (live) setLoading(false);
-      }
-    }
-    fetchOrder();
-    return () => {
-      live = false;
-    };
-  }, [orderId]);
-
-  // Poll for payment status changes
-  useEffect(() => {
-    if (!orderData?.gid || paymentStatus === "PAID") return;
-
-    let live = true;
-    const pollInterval = setInterval(async () => {
-      try {
-        const res = await fetch(
-          `${BACKEND_URL}/api/order-total?orderId=${encodeURIComponent(orderData.gid)}`,
-          { method: "GET" }
-        );
-        if (!res.ok) return;
-        const json = await res.json();
-        if (!live) return;
-
-        if (json.financialStatus === "PAID" || json.financialStatus === "PARTIALLY_PAID") {
-          setPaymentStatus("PAID");
-        }
-      } catch {
-        // Ignore polling errors
-      }
-    }, 5000);
-
-    return () => {
-      live = false;
-      clearInterval(pollInterval);
-    };
-  }, [orderData?.gid, paymentStatus]);
-
-  // Format amount for display
-  const formattedAmount = useMemo(() => {
-    if (!orderData?.amount || !orderData?.currency) return null;
-    try {
-      return new Intl.NumberFormat("pt-AO", {
-        style: "currency",
-        currency: orderData.currency,
-      }).format(Number(orderData.amount));
-    } catch {
-      return `${orderData.amount} ${orderData.currency}`;
-    }
-  }, [orderData?.amount, orderData?.currency]);
-
-  const createPaymentSession = useCallback(async () => {
-    if (!orderData?.gid) return null;
-    if (paymentUrl) return paymentUrl;
-    if (creatingSession) return paymentUrl;
-
-    sessionRequestedRef.current = true;
-    setCreatingSession(true);
-    setError(null);
-
-    try {
-      const res = await fetch(`${BACKEND_URL}/api/mcx/sessions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orderId: orderData.gid }),
-      });
-
-      if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.error || "Failed to create payment session");
-      }
-
-      const { paymentUrl: newPaymentUrl } = await res.json();
-      setPaymentUrl(newPaymentUrl);
-      return newPaymentUrl;
-    } catch (e) {
-      sessionRequestedRef.current = false;
-      setError(e.message || "Falha ao criar sessão de pagamento.");
-      return null;
-    } finally {
-      setCreatingSession(false);
-    }
-  }, [creatingSession, orderData?.gid, paymentUrl]);
-
-  // Pre-create payment session once order is ready
-  useEffect(() => {
-    if (!orderData?.gid) return;
-    if (paymentStatus === "PAID") return;
-    if (paymentUrl) return;
-    if (sessionRequestedRef.current) return;
-
-    createPaymentSession();
-  }, [createPaymentSession, orderData?.gid, paymentStatus, paymentUrl]);
-
-  // Handle Pay button click
-  const handlePayClick = useCallback(async () => {
-    if (paymentUrl) return;
-    await createPaymentSession();
-  }, [createPaymentSession, paymentUrl]);
-
-  // Show nothing while loading
   if (loading) {
     return (
       <Card>
@@ -229,7 +85,6 @@ function MCXThankYou() {
     );
   }
 
-  // Show error state
   if (error && !orderData) {
     return (
       <Card>
@@ -241,7 +96,6 @@ function MCXThankYou() {
     );
   }
 
-  // Show success state when paid
   if (paymentStatus === "PAID") {
     return (
       <Card appearance="success">
@@ -261,7 +115,6 @@ function MCXThankYou() {
     );
   }
 
-  // Show Pay button for unpaid orders
   return (
     <Card>
       <BlockStack spacing="base">
@@ -288,7 +141,7 @@ function MCXThankYou() {
           kind="primary"
           onPress={!paymentUrl ? handlePayClick : undefined}
           to={paymentUrl || undefined}
-          disabled={creatingSession || !paymentUrl}
+          disabled={creatingSession || (!paymentUrl && !orderData?.gid)}
           loading={creatingSession}
         >
           {creatingSession ? "A preparar pagamento..." : "Pagar com Multicaixa"}
@@ -312,28 +165,176 @@ function MCXThankYou() {
   );
 }
 
-// ====== ORDER STATUS PAGE ======
-function MCXOrderStatus() {
-  const order = useOrderSafe();
-  const [dismissed, setDismissed] = useStorageState("mcx-os-dismissed");
+// ====== Shared payment state ======
+function useMulticaixaPayment(orderGid, { waitForOrderId = false, missingOrderMessage } = {}) {
+  const [loading, setLoading] = useState(waitForOrderId || Boolean(orderGid));
+  const [error, setError] = useState(null);
+  const [orderData, setOrderData] = useState(null);
+  const [paymentStatus, setPaymentStatus] = useState("PENDING");
+  const [creatingSession, setCreatingSession] = useState(false);
+  const [paymentUrl, setPaymentUrl] = useState(null);
+  const autoSessionRequestedRef = useRef(false);
 
-  if (dismissed.loading || dismissed.data === true) return null;
+  useEffect(() => {
+    let live = true;
 
-  return (
-    <Card>
-      <BlockStack spacing="tight">
-        <Heading>Pagamento Multicaixa - Ajuda</Heading>
-        {order?.name && <Mono label="Pedido" value={order.name} />}
-        <Text>
-          Se ainda não concluiu o pagamento, pode voltar à página de confirmação
-          da encomenda para pagar. Após pagar, a confirmação é automática.
-        </Text>
-        <Button kind="secondary" onPress={() => setDismissed(true)}>
-          Entendi
-        </Button>
-      </BlockStack>
-    </Card>
-  );
+    async function fetchOrder() {
+      if (!orderGid) {
+        autoSessionRequestedRef.current = false;
+        setOrderData(null);
+        setPaymentUrl(null);
+        setPaymentStatus("PENDING");
+
+        if (waitForOrderId) {
+          setError(null);
+          setLoading(true);
+        } else {
+          setLoading(false);
+          setError(
+            missingOrderMessage ||
+              "Não foi possível identificar a encomenda para iniciar o pagamento."
+          );
+        }
+        return;
+      }
+
+      try {
+        setLoading(true);
+        setError(null);
+
+        const json = await fetchOrderWithRetry(orderGid);
+        if (!live) return;
+
+        autoSessionRequestedRef.current = false;
+        setOrderData({
+          gid: orderGid,
+          name: json.orderName,
+          amount: json.amount,
+          currency: json.currencyCode,
+          financialStatus: json.financialStatus,
+        });
+        setPaymentUrl(null);
+        setPaymentStatus(
+          isPaidFinancialStatus(json.financialStatus) ? "PAID" : "PENDING"
+        );
+      } catch {
+        if (!live) return;
+        setOrderData(null);
+        setError("Falha ao obter dados da encomenda.");
+      } finally {
+        if (live) setLoading(false);
+      }
+    }
+
+    fetchOrder();
+    return () => {
+      live = false;
+    };
+  }, [missingOrderMessage, orderGid, waitForOrderId]);
+
+  useEffect(() => {
+    if (!orderData?.gid || paymentStatus === "PAID") return;
+
+    let live = true;
+    const pollInterval = setInterval(async () => {
+      try {
+        const res = await fetch(
+          `${BACKEND_URL}/api/order-total?orderId=${encodeURIComponent(orderData.gid)}`,
+          { method: "GET" }
+        );
+        if (!res.ok) return;
+        const json = await res.json();
+        if (!live) return;
+
+        if (isPaidFinancialStatus(json.financialStatus)) {
+          setPaymentStatus("PAID");
+        }
+      } catch {
+        // Ignore polling errors
+      }
+    }, 5000);
+
+    return () => {
+      live = false;
+      clearInterval(pollInterval);
+    };
+  }, [orderData?.gid, paymentStatus]);
+
+  const formattedAmount = useMemo(() => {
+    if (!orderData?.amount || !orderData?.currency) return null;
+    try {
+      return new Intl.NumberFormat("pt-AO", {
+        style: "currency",
+        currency: orderData.currency,
+      }).format(Number(orderData.amount));
+    } catch {
+      return `${orderData.amount} ${orderData.currency}`;
+    }
+  }, [orderData?.amount, orderData?.currency]);
+
+  const createPaymentSession = useCallback(async () => {
+    if (!orderData?.gid) return null;
+    if (paymentUrl) return paymentUrl;
+    if (creatingSession) return null;
+
+    setCreatingSession(true);
+    setError(null);
+
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/mcx/sessions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderId: orderData.gid }),
+      });
+
+      if (!res.ok) {
+        const message = await readErrorMessage(
+          res,
+          "Falha ao criar sessão de pagamento."
+        );
+        throw new Error(message);
+      }
+
+      const body = await res.json();
+      if (!body?.paymentUrl) {
+        throw new Error("Falha ao criar sessão de pagamento.");
+      }
+
+      setPaymentUrl(body.paymentUrl);
+      return body.paymentUrl;
+    } catch (e) {
+      setError(e?.message || "Falha ao criar sessão de pagamento.");
+      return null;
+    } finally {
+      setCreatingSession(false);
+    }
+  }, [creatingSession, orderData?.gid, paymentUrl]);
+
+  useEffect(() => {
+    if (!orderData?.gid) return;
+    if (paymentStatus === "PAID") return;
+    if (paymentUrl) return;
+    if (autoSessionRequestedRef.current) return;
+
+    autoSessionRequestedRef.current = true;
+    createPaymentSession();
+  }, [createPaymentSession, orderData?.gid, paymentStatus, paymentUrl]);
+
+  const handlePayClick = useCallback(async () => {
+    if (paymentUrl) return;
+    await createPaymentSession();
+  }, [createPaymentSession, paymentUrl]);
+
+  return {
+    loading,
+    error,
+    orderData,
+    paymentStatus,
+    creatingSession,
+    paymentUrl,
+    handlePayClick,
+    formattedAmount,
+  };
 }
 
 // ====== Helpers ======
@@ -346,48 +347,86 @@ function Card({ children, appearance }) {
   );
 }
 
-function Mono({ label, value }) {
-  return (
-    <Text>
-      <Text emphasis>{label}:</Text> <Text appearance="monospace">{value}</Text>
-    </Text>
-  );
-}
+function resolveOrderGid(rawOrderId) {
+  if (!rawOrderId) return null;
 
-function useStorageState(key) {
-  const storage = useStorage();
-  const [data, setData] = useState();
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let live = true;
-    (async () => {
-      const value = await storage.read(key);
-      if (live) {
-        setData(value);
-        setLoading(false);
-      }
-    })();
-    return () => {
-      live = false;
-    };
-  }, [storage, key]);
-
-  const setStorage = useCallback(
-    (value) => {
-      storage.write(key, value);
-    },
-    [storage, key]
-  );
-  return [{ data, loading }, setStorage];
-}
-
-function useOrderSafe() {
-  try {
-    return require("@shopify/ui-extensions-react/checkout").useOrder?.();
-  } catch {
-    return undefined;
+  const raw = String(rawOrderId);
+  if (raw.startsWith("gid://shopify/Order/")) {
+    return raw;
   }
+
+  const tail = raw.split("/").pop();
+  if (tail && /^\d+$/.test(tail)) {
+    return `gid://shopify/Order/${tail}`;
+  }
+
+  return /^\d+$/.test(raw) ? `gid://shopify/Order/${raw}` : null;
+}
+
+function isPaidFinancialStatus(financialStatus) {
+  return financialStatus === "PAID" || financialStatus === "PARTIALLY_PAID";
+}
+
+async function fetchOrderWithRetry(orderGid) {
+  const MAX_RETRIES = 6;
+  let attempt = 0;
+  let orderJson = null;
+
+  while (attempt <= MAX_RETRIES) {
+    const res = await fetch(
+      `${BACKEND_URL}/api/order-total?orderId=${encodeURIComponent(orderGid)}`,
+      { method: "GET" }
+    );
+
+    if (res.ok) {
+      orderJson = await res.json();
+      break;
+    }
+
+    let errorText = "";
+    try {
+      errorText = await res.text();
+    } catch {
+      errorText = "";
+    }
+
+    const looksLikeOrderNotReady =
+      res.status === 404 ||
+      errorText.includes("Order not found") ||
+      errorText.includes("order not found");
+
+    if (looksLikeOrderNotReady && attempt < MAX_RETRIES) {
+      await delay(500 * (attempt + 1));
+      attempt += 1;
+      continue;
+    }
+
+    throw new Error(`Backend ${res.status}${errorText ? `: ${errorText}` : ""}`);
+  }
+
+  if (!orderJson) {
+    throw new Error("Failed to load order after retries");
+  }
+
+  return orderJson;
+}
+
+async function readErrorMessage(response, fallbackMessage) {
+  try {
+    const body = await response.json();
+    if (body?.error) return body.error;
+  } catch {
+    // Fall back to text response.
+  }
+
+  try {
+    const text = await response.text();
+    if (text) return text;
+  } catch {
+    // Ignore parsing failure.
+  }
+
+  return fallbackMessage;
 }
 
 function delay(ms) {
