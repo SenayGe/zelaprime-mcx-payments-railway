@@ -95,41 +95,13 @@ app.get("/api/order-total", async (req, res) => {
       ? normalizedOrderId
       : `gid://shopify/Order/${normalizedOrderId}`;
     const ord = await shopifyClient.getOrder(orderGid);
-    let financialStatus = ord.financialStatus;
-
-    // If gateway callback already confirmed payment, reflect paid state immediately
-    // and attempt to reconcile Shopify in the background path.
-    try {
-      const hasConfirmedLocalPayment =
-        await paymentService.hasConfirmedPaymentForOrder(orderGid);
-
-      if (
-        hasConfirmedLocalPayment &&
-        financialStatus !== "PAID" &&
-        financialStatus !== "PARTIALLY_PAID"
-      ) {
-        try {
-          await shopifyClient.markOrderAsPaid(orderGid);
-          console.log(`Order ${orderGid} marked as paid via reconciliation`);
-        } catch (markErr) {
-          console.error(
-            `Failed to reconcile order ${orderGid} as paid: ${markErr.message}`
-          );
-        }
-        financialStatus = "PAID";
-      }
-    } catch (reconcileErr) {
-      console.error(
-        `Failed checking local payment status for ${orderGid}: ${reconcileErr.message}`
-      );
-    }
 
     return res.json({
       orderId: ord.id,
       orderName: ord.name,
       amount: ord.amount ?? null,
       currencyCode: ord.currency ?? null,
-      financialStatus,
+      financialStatus: ord.financialStatus,
     });
   } catch (e) {
     console.error(e);

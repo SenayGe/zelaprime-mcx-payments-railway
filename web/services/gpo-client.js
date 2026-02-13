@@ -96,29 +96,10 @@ function verifyCallbackSignature(payload, signature) {
     .createHmac("sha256", secret)
     .update(payload, "utf8")
     .digest("hex");
-  const rawSignature = String(signature || "").trim();
-  if (!rawSignature) return false;
 
-  const expectedHexBuffer = Buffer.from(expectedSignature, "hex");
-  const expectedBase64 = expectedHexBuffer.toString("base64");
-  const expectedBase64NoPadding = expectedBase64.replace(/=+$/, "");
-
-  const lowerHex = rawSignature.toLowerCase().replace(/^0x/, "");
-  if (/^[0-9a-f]+$/.test(lowerHex) && lowerHex.length === expectedSignature.length) {
-    const providedHexBuffer = Buffer.from(lowerHex, "hex");
-    if (providedHexBuffer.length === expectedHexBuffer.length) {
-      return crypto.timingSafeEqual(providedHexBuffer, expectedHexBuffer);
-    }
-  }
-
-  const normalizedBase64 = rawSignature.replace(/\s+/g, "");
-  const normalizedBase64NoPadding = normalizedBase64.replace(/=+$/, "");
-  const providedBase64Buffer = Buffer.from(normalizedBase64NoPadding, "utf8");
-  const expectedBase64Buffer = Buffer.from(expectedBase64NoPadding, "utf8");
-
-  return (
-    providedBase64Buffer.length === expectedBase64Buffer.length &&
-    crypto.timingSafeEqual(providedBase64Buffer, expectedBase64Buffer)
+  return crypto.timingSafeEqual(
+    Buffer.from(signature, "hex"),
+    Buffer.from(expectedSignature, "hex")
   );
 }
 
@@ -129,33 +110,8 @@ function verifyCallbackSignature(payload, signature) {
  */
 function parseCallback(payload) {
   const reference =
-    firstNonEmptyString(
-      payload?.merchantReferenceNumber,
-      payload?.merchantReference,
-      payload?.merchant_reference,
-      payload?.reference?.id,
-      payload?.reference,
-      payload?.referenceId
-    ) || null;
-  const status =
-    firstNonEmptyString(
-      payload?.status,
-      payload?.paymentStatus,
-      payload?.transactionStatus
-    ) || null;
-  const amount = parseAmount(
-    payload?.amount ?? payload?.value ?? payload?.totalAmount ?? null
-  );
-  const currency = firstNonEmptyString(
-    payload?.currency,
-    payload?.reference?.currency,
-    payload?.currencyCode
-  );
-  const id = firstNonEmptyString(
-    payload?.id,
-    payload?.transactionId,
-    payload?.paymentId
-  );
+    payload?.merchantReferenceNumber || payload?.reference?.id || null;
+  const { status, amount, currency, id } = payload || {};
 
   if (!reference || !status) {
     throw new Error("Invalid callback payload: missing required fields");
@@ -163,8 +119,8 @@ function parseCallback(payload) {
 
   return {
     reference,
-    status: String(status).trim().toUpperCase(), // SUCCESS, APPROVED, ACCEPTED, FAILED, EXPIRED, CANCELLED
-    amount,
+    status, // SUCCESS, APPROVED, ACCEPTED, FAILED, EXPIRED, CANCELLED
+    amount: Number(amount),
     transactionId: id,
     currency: currency || null,
   };
@@ -184,22 +140,6 @@ function generateReference(orderNumber) {
   const random = crypto.randomBytes(2).toString("hex").toUpperCase();
   // Combine and ensure max 15 chars
   return `MCX${cleanOrder}${timestamp}${random}`.slice(0, 15);
-}
-
-function firstNonEmptyString(...values) {
-  for (const value of values) {
-    if (value == null) continue;
-    if (typeof value === "object") continue;
-    const candidate = String(value).trim();
-    if (candidate) return candidate;
-  }
-  return null;
-}
-
-function parseAmount(value) {
-  if (value == null || value === "") return null;
-  const numeric = Number(String(value).replace(",", "."));
-  return Number.isFinite(numeric) ? numeric : null;
 }
 
 module.exports = {
