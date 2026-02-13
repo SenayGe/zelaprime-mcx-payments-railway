@@ -8,7 +8,9 @@ const gpoClient = require("./gpo-client");
 const shopifyClient = require("./shopify-client");
 
 //const APP_URL = (process.env.APP_URL || "https://pay.zelaprime.com").replace(/\/$/, "");
-const APP_URL = (process.env.APP_URL || "zelaprime-mcx-payments-railway-production.up.railway.app").replace(/\/$/, "");
+const APP_URL = (
+  process.env.APP_URL || "https://zelaprime-mcx-payments-railway-production.up.railway.app"
+).replace(/\/$/, "");
 
 function normalizeRow(row, columns) {
   if (!row) return row;
@@ -35,6 +37,19 @@ function normalizeRows(result) {
  */
 async function createPaymentSession(orderGid) {
   const db = getDatabase();
+
+  // Prevent duplicate charge attempts when callback already confirmed payment.
+  if (await hasConfirmedPaymentForOrder(orderGid)) {
+    try {
+      await shopifyClient.markOrderAsPaid(orderGid);
+      console.log(`Order ${orderGid} reconciled as paid from local payment record`);
+    } catch (err) {
+      console.error(
+        `Order ${orderGid} already has a confirmed payment, but Shopify mark-as-paid failed: ${err.message}`
+      );
+    }
+    throw new Error("Order is not pending payment (status: PAID)");
+  }
 
   // Get order details from Shopify
   const order = await shopifyClient.getOrder(orderGid);
@@ -143,6 +158,25 @@ async function getPaymentStatusByOrder(orderGid) {
 }
 
 /**
+ * Check if an order already has a confirmed local payment callback
+ * @param {string} orderGid Shopify order GID
+ * @returns {Promise<boolean>}
+ */
+async function hasConfirmedPaymentForOrder(orderGid) {
+  const db = getDatabase();
+
+  const result = await db.execute({
+    sql: `SELECT 1 FROM multicaixa_payments
+          WHERE shopify_order_gid = ? AND status = 'PAID'
+          ORDER BY paid_at DESC, created_at DESC LIMIT 1`,
+    args: [orderGid],
+  });
+
+  const rows = normalizeRows(result);
+  return rows.length > 0;
+}
+
+/**
  * Process GPO callback and mark order as paid
  * @param {Object} callbackData Parsed callback data
  * @param {string} rawPayload Raw request body for replay protection
@@ -178,10 +212,16 @@ async function processCallback(callbackData, rawPayload) {
 
   // Verify amount matches
   if (amount != null && Number.isFinite(Number(amount))) {
-    const amountMinorFromCallback = Math.round(Number(amount) * 100);
-    if (amountMinorFromCallback !== payment.amount_minor) {
+    const numericAmount = Number(amount);
+    const amountMajorAsMinor = Math.round(numericAmount * 100);
+    const amountMinorDirect = Math.round(numericAmount);
+    const amountMatches =
+      amountMajorAsMinor === payment.amount_minor ||
+      amountMinorDirect === payment.amount_minor;
+
+    if (!amountMatches) {
       console.error(
-        `Amount mismatch for ${reference}: expected ${payment.amount_minor}, got ${amountMinorFromCallback}`
+        `Amount mismatch for ${reference}: expected ${payment.amount_minor}, got ${numericAmount}`
       );
       throw new Error("Amount mismatch");
     }
@@ -197,7 +237,9 @@ async function processCallback(callbackData, rawPayload) {
   const isPaid =
     normalizedStatus === "SUCCESS" ||
     normalizedStatus === "APPROVED" ||
-    normalizedStatus === "ACCEPTED";
+    normalizedStatus === "ACCEPTED" ||
+    normalizedStatus === "PAID" ||
+    normalizedStatus === "COMPLETED";
   const newStatus = isPaid ? "PAID" : normalizedStatus;
   const paidAt = isPaid ? new Date().toISOString() : null;
 
@@ -242,6 +284,7 @@ module.exports = {
   createPaymentSession,
   getPaymentSession,
   getPaymentStatusByOrder,
+  hasConfirmedPaymentForOrder,
   processCallback,
   cancelPaymentByOrder,
 };
