@@ -1,18 +1,40 @@
 // web/services/shopify-client.js
 // Shopify Admin API client for order operations
 
+const tokenStore = require("./shopify-token-store");
+
+function hasUsableEnvToken() {
+  const token = String(process.env.SHOPIFY_ADMIN_TOKEN || "").trim();
+  return token.length > 0 && !token.startsWith("REPLACE_WITH_");
+}
+
+async function getShopAndToken() {
+  const shop = String(process.env.SHOPIFY_SHOP || "").trim();
+  if (!shop) {
+    throw new Error("Missing SHOPIFY_SHOP");
+  }
+
+  if (hasUsableEnvToken()) {
+    return { shop, token: String(process.env.SHOPIFY_ADMIN_TOKEN).trim() };
+  }
+
+  const storedToken = await tokenStore.getAccessToken(shop);
+  if (!storedToken) {
+    throw new Error(
+      "Missing Shopify access token. Complete OAuth install at /api/auth/install first."
+    );
+  }
+
+  return { shop, token: storedToken };
+}
+
 /**
  * Get order details from Shopify Admin API
  * @param {string} orderGid Shopify order GID (e.g., "gid://shopify/Order/123")
  * @returns {Promise<{id: string, name: string, amount: string, currency: string, financialStatus: string, statusPageUrl?: string}>}
  */
 async function getOrder(orderGid) {
-  const shop = process.env.SHOPIFY_SHOP;
-  const token = process.env.SHOPIFY_ADMIN_TOKEN;
-
-  if (!shop || !token) {
-    throw new Error("Missing SHOPIFY_SHOP or SHOPIFY_ADMIN_TOKEN");
-  }
+  const { shop, token } = await getShopAndToken();
 
   const query = `
     query ($id: ID!) {
@@ -79,12 +101,7 @@ async function getOrder(orderGid) {
  * @returns {Promise<{success: boolean, order: Object}>}
  */
 async function markOrderAsPaid(orderGid) {
-  const shop = process.env.SHOPIFY_SHOP;
-  const token = process.env.SHOPIFY_ADMIN_TOKEN;
-
-  if (!shop || !token) {
-    throw new Error("Missing SHOPIFY_SHOP or SHOPIFY_ADMIN_TOKEN");
-  }
+  const { shop, token } = await getShopAndToken();
 
   const mutation = `
     mutation orderMarkAsPaid($input: OrderMarkAsPaidInput!) {

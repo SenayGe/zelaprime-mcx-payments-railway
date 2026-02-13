@@ -66,6 +66,16 @@ async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_payments_status ON multicaixa_payments(status)
   `);
 
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS shopify_tokens (
+      shop TEXT PRIMARY KEY,
+      access_token TEXT NOT NULL,
+      scopes TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
   console.log("Database initialized");
 }
 

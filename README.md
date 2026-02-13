@@ -70,6 +70,25 @@ pnpm run dev
 
 Open the URL generated in your console. Once you grant permission to the app, you can start development (such as generating extensions).
 
+### OAuth token setup for this backend
+
+This app's backend can now use OAuth token exchange instead of requiring a manually generated `SHOPIFY_ADMIN_TOKEN`.
+
+1. Set these variables in your runtime environment:
+   - `SHOPIFY_API_KEY`
+   - `SHOPIFY_API_SECRET`
+   - `SHOPIFY_SHOP` (for example `yvimv1-hc.myshopify.com`)
+   - `APP_URL` (for example `https://zelaprime-mcx-payments-railway-production.up.railway.app`)
+1. Start OAuth install by visiting:
+   - `GET /api/auth/install?shop=<your-shop>.myshopify.com`
+1. Shopify redirects to:
+   - `GET /api/auth/callback`
+   - the offline token is stored in the `shopify_tokens` table.
+1. Check auth readiness:
+   - `GET /api/auth/status?shop=<your-shop>.myshopify.com`
+
+If `SHOPIFY_ADMIN_TOKEN` is set, the backend still uses it as a fallback.
+
 ## Developer resources
 
 - [Introduction to Shopify apps](https://shopify.dev/docs/apps/getting-started)

@@ -9,6 +9,7 @@ const { initDatabase } = require("./config/database");
 const mcxSessionsRouter = require("./routes/mcx-sessions");
 const mcxCallbackRouter = require("./routes/mcx-callback");
 const shopifyWebhooksRouter = require("./routes/shopify-webhooks");
+const shopifyAuthRouter = require("./routes/shopify-auth");
 const paymentService = require("./services/payment-service");
 const shopifyClient = require("./services/shopify-client");
 
@@ -89,54 +90,18 @@ app.get("/api/order-total", async (req, res) => {
     const orderId = req.query.orderId;
     if (!orderId) return res.status(400).json({ error: "Missing orderId" });
 
-    const shop = process.env.SHOPIFY_SHOP;
-    const token = process.env.SHOPIFY_ADMIN_TOKEN;
-    if (!shop || !token) {
-      return res
-        .status(500)
-        .json({ error: "Missing SHOPIFY_SHOP or SHOPIFY_ADMIN_TOKEN" });
-    }
-
-    const query = `
-      query ($id: ID!) {
-        order(id: $id) {
-          id
-          name
-          displayFinancialStatus
-          currentTotalPriceSet { shopMoney { amount currencyCode } }
-          totalPriceSet { shopMoney { amount currencyCode } }
-        }
-      }`;
-
-    const r = await fetch(`https://${shop}/admin/api/2025-07/graphql.json`, {
-      method: "POST",
-      headers: {
-        "X-Shopify-Access-Token": token,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ query, variables: { id: orderId } }),
-    });
-
-    if (!r.ok) {
-      const text = await r.text();
-      return res.status(502).json({ error: `Shopify ${r.status}`, details: text });
-    }
-
-    const j = await r.json();
-    if (j.errors) return res.status(502).json({ error: j.errors });
-
-    const ord = j.data?.order;
-    if (!ord) return res.status(404).json({ error: "Order not found" });
-
-    const money =
-      ord.currentTotalPriceSet?.shopMoney || ord.totalPriceSet?.shopMoney || null;
+    const normalizedOrderId = String(orderId);
+    const orderGid = normalizedOrderId.startsWith("gid://shopify/Order/")
+      ? normalizedOrderId
+      : `gid://shopify/Order/${normalizedOrderId}`;
+    const ord = await shopifyClient.getOrder(orderGid);
 
     return res.json({
       orderId: ord.id,
       orderName: ord.name,
-      amount: money?.amount ?? null,
-      currencyCode: money?.currencyCode ?? null,
-      financialStatus: ord.displayFinancialStatus,
+      amount: ord.amount ?? null,
+      currencyCode: ord.currency ?? null,
+      financialStatus: ord.financialStatus,
     });
   } catch (e) {
     console.error(e);
@@ -152,6 +117,9 @@ app.use("/api/mcx/callback", mcxCallbackRouter);
 
 // Shopify webhooks
 app.use("/api/shopify/webhooks", shopifyWebhooksRouter);
+
+// Shopify OAuth install/token flow
+app.use("/api/auth", shopifyAuthRouter);
 
 // Email payment link (on-demand session)
 app.get("/pay/email", async (req, res) => {

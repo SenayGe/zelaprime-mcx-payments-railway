@@ -3,35 +3,34 @@
 # This is the primary configuration file for your Shopify app.
 
 
-name = "MCX Order Details"
-handle = "mcx-thankyou"
-client_id = "39cc198200ce826391e2b98bff0e9948"
+name = "Multicaixa Payments Extension"
+handle = "mcx-payment-extension"
+client_id = "dffb7d74f0d5912790eeee35757e041c"
 
-application_url = "https://pay.zelaprime.com/"
+application_url = "https://zelaprime-mcx-payments-railway-production.up.railway.app/"
 embedded = false
 
 [build]
-include_config_on_deploy = true
 
 [webhooks]
 api_version = "2025-07"
 
 [[webhooks.subscriptions]]
 topics = ["orders/cancelled"]
-uri = "https://pay.zelaprime.com/api/shopify/webhooks/orders/cancelled"
+uri = "https://zelaprime-mcx-payments-railway-production.up.railway.app/api/shopify/webhooks/orders/cancelled"
 
 [[webhooks.subscriptions]]
 compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
-uri = "https://pay.zelaprime.com/api/shopify/webhooks/compliance"
+uri = "https://zelaprime-mcx-payments-railway-production.up.railway.app/api/shopify/webhooks/compliance"
 
 [access_scopes]
 # read_orders: read order data
 # write_orders: mark orders as paid via orderMarkAsPaid mutation
-scopes = "read_orders,write_orders"
+scopes = "read_orders,write_orders,customer_read_orders,customer_write_orders"
 
 # We are providing a valid placeholder redirect URL for the [auth] block.
 [auth]
-redirect_urls = [ "https://pay.zelaprime.com/api/auth/callback" ]
+redirect_urls = [ "https://zelaprime-mcx-payments-railway-production.up.railway.app/api/auth/callback" ]
 
 [pos]
 embedded = false
