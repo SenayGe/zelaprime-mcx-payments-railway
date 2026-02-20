@@ -96,6 +96,10 @@ app.get("/api/order-total", async (req, res) => {
       : `gid://shopify/Order/${normalizedOrderId}`;
     const ord = await shopifyClient.getOrder(orderGid);
     let financialStatus = ord.financialStatus;
+    const paymentGatewayNames = Array.isArray(ord.paymentGatewayNames)
+      ? ord.paymentGatewayNames
+      : [];
+    const paymentMethodType = paymentService.getPaymentMethodType(paymentGatewayNames);
 
     // If gateway callback already confirmed payment, reflect paid state immediately
     // and attempt to reconcile Shopify in the background path.
@@ -130,6 +134,9 @@ app.get("/api/order-total", async (req, res) => {
       amount: ord.amount ?? null,
       currencyCode: ord.currency ?? null,
       financialStatus,
+      createdAt: ord.createdAt ?? null,
+      paymentGatewayNames,
+      paymentMethodType,
     });
   } catch (e) {
     console.error(e);

@@ -11,6 +11,19 @@ const shopifyClient = require("./shopify-client");
 const APP_URL = (
   process.env.APP_URL || "https://zelaprime-mcx-payments-railway-production.up.railway.app"
 ).replace(/\/$/, "");
+const DEFAULT_REFERENCE_EXPIRY_HOURS = 2;
+const DEFAULT_REFERENCE_DIGITS = 9;
+const MIN_REFERENCE_DIGITS = 6;
+const MAX_REFERENCE_DIGITS = 18;
+const REFERENCE_INSERT_RETRIES = 8;
+const DEFAULT_EXPRESS_MATCH = "MULTICAIXA Express";
+const DEFAULT_REFERENCE_MATCH = "Pagamento por referência";
+
+const PAYMENT_METHOD_TYPES = Object.freeze({
+  EXPRESS: "EXPRESS",
+  REFERENCE: "REFERENCE",
+  OTHER: "OTHER",
+});
 
 function normalizeRow(row, columns) {
   if (!row) return row;
@@ -28,6 +41,119 @@ function normalizeRows(result) {
   if (!result || !Array.isArray(result.rows)) return [];
   const columns = result.columns;
   return result.rows.map((row) => normalizeRow(row, columns));
+}
+
+function isPendingFinancialStatus(financialStatus) {
+  return financialStatus === "PENDING" || financialStatus === "PARTIALLY_PAID";
+}
+
+function normalizeSearchValue(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function parseMatchTokens(raw, fallback) {
+  return String(raw || fallback)
+    .split(",")
+    .map((token) => normalizeSearchValue(token))
+    .filter(Boolean);
+}
+
+function getPaymentMethodType(paymentGatewayNames) {
+  const names = Array.isArray(paymentGatewayNames)
+    ? paymentGatewayNames.map((name) => normalizeSearchValue(name)).filter(Boolean)
+    : [];
+
+  const expressTokens = parseMatchTokens(
+    process.env.PAYMENT_METHOD_EXPRESS_MATCH,
+    DEFAULT_EXPRESS_MATCH
+  );
+  const referenceTokens = parseMatchTokens(
+    process.env.PAYMENT_METHOD_REFERENCE_MATCH,
+    DEFAULT_REFERENCE_MATCH
+  );
+
+  if (matchesAnyToken(names, referenceTokens)) {
+    return PAYMENT_METHOD_TYPES.REFERENCE;
+  }
+
+  if (matchesAnyToken(names, expressTokens)) {
+    return PAYMENT_METHOD_TYPES.EXPRESS;
+  }
+
+  return PAYMENT_METHOD_TYPES.OTHER;
+}
+
+function matchesAnyToken(names, tokens) {
+  return names.some((name) => tokens.some((token) => name.includes(token)));
+}
+
+function getReferenceExpiryHours() {
+  const rawHours = Number.parseInt(
+    String(process.env.REFERENCE_PAYMENT_EXPIRY_HOURS || ""),
+    10
+  );
+
+  if (Number.isInteger(rawHours) && rawHours > 0 && rawHours <= 168) {
+    return rawHours;
+  }
+
+  return DEFAULT_REFERENCE_EXPIRY_HOURS;
+}
+
+function getReferenceDigits() {
+  const rawDigits = Number.parseInt(
+    String(process.env.REFERENCE_PAYMENT_DIGITS || ""),
+    10
+  );
+
+  if (
+    Number.isInteger(rawDigits) &&
+    rawDigits >= MIN_REFERENCE_DIGITS &&
+    rawDigits <= MAX_REFERENCE_DIGITS
+  ) {
+    return rawDigits;
+  }
+
+  return DEFAULT_REFERENCE_DIGITS;
+}
+
+function getReferenceExpiryFromOrder(orderCreatedAt) {
+  const createdAtMs = Date.parse(String(orderCreatedAt || ""));
+  if (!Number.isFinite(createdAtMs)) {
+    throw new Error("Order is missing createdAt");
+  }
+
+  const expiresAtMs =
+    createdAtMs + getReferenceExpiryHours() * 60 * 60 * 1000;
+  return new Date(expiresAtMs).toISOString();
+}
+
+function isExpiredTimestamp(timestamp) {
+  const ts = Date.parse(String(timestamp || ""));
+  return Number.isFinite(ts) ? Date.now() >= ts : false;
+}
+
+function generateNumericReference(length) {
+  let result = "";
+  for (let i = 0; i < length; i += 1) {
+    result += crypto.randomInt(0, 10).toString();
+  }
+  return result;
+}
+
+function isUniqueReferenceConstraintError(err) {
+  const message = String(err?.message || "").toLowerCase();
+  return message.includes("unique") && message.includes("reference");
+}
+
+function buildReferenceResult({ reference, amount, currencyCode, expiresAt }) {
+  return {
+    reference,
+    amount,
+    currencyCode,
+    expiresAt,
+    isExpired: isExpiredTimestamp(expiresAt),
+  };
 }
 
 /**
@@ -55,7 +181,7 @@ async function createPaymentSession(orderGid) {
   const order = await shopifyClient.getOrder(orderGid);
 
   // Validate order is unpaid or partially paid
-  if (order.financialStatus !== "PENDING" && order.financialStatus !== "PARTIALLY_PAID") {
+  if (!isPendingFinancialStatus(order.financialStatus)) {
     throw new Error(`Order is not pending payment (status: ${order.financialStatus})`);
   }
 
@@ -89,8 +215,8 @@ async function createPaymentSession(orderGid) {
   // Store payment record
   await db.execute({
     sql: `INSERT INTO multicaixa_payments
-          (id, shopify_order_gid, order_number, reference, amount_minor, currency, purchase_token, expires_at, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CREATED')`,
+          (id, shopify_order_gid, order_number, reference, amount_minor, currency, purchase_token, expires_at, status, payment_method)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CREATED', 'EXPRESS')`,
     args: [
       paymentId,
       orderGid,
@@ -108,6 +234,108 @@ async function createPaymentSession(orderGid) {
     paymentUrl: `${APP_URL}/pay/${paymentId}`,
     expiresAt: gpoResult.expiresAt,
   };
+}
+
+/**
+ * Create or return an order reference for manual ATM payment flow
+ * @param {string} orderGid Shopify order GID
+ * @returns {Promise<{reference: string|null, amount: string, currencyCode: string, expiresAt: string, isExpired: boolean}>}
+ */
+async function createOrGetReferencePayment(orderGid) {
+  const db = getDatabase();
+
+  if (await hasConfirmedPaymentForOrder(orderGid)) {
+    try {
+      await shopifyClient.markOrderAsPaid(orderGid);
+      console.log(`Order ${orderGid} reconciled as paid from local payment record`);
+    } catch (err) {
+      console.error(
+        `Order ${orderGid} already has a confirmed payment, but Shopify mark-as-paid failed: ${err.message}`
+      );
+    }
+    throw new Error("Order is not pending payment (status: PAID)");
+  }
+
+  const order = await shopifyClient.getOrder(orderGid);
+  if (!isPendingFinancialStatus(order.financialStatus)) {
+    throw new Error(`Order is not pending payment (status: ${order.financialStatus})`);
+  }
+
+  const paymentMethodType = getPaymentMethodType(order.paymentGatewayNames);
+  if (paymentMethodType !== PAYMENT_METHOD_TYPES.REFERENCE) {
+    throw new Error("Order is not configured for pay by reference");
+  }
+
+  const parsedAmount = Number(order.amount);
+  if (!Number.isFinite(parsedAmount)) {
+    throw new Error(`Invalid order amount: ${order.amount}`);
+  }
+  const amountMinor = Math.round(parsedAmount * 100);
+  const expiresAt = getReferenceExpiryFromOrder(order.createdAt);
+
+  const existingResult = await db.execute({
+    sql: `SELECT reference, expires_at FROM multicaixa_payments
+          WHERE shopify_order_gid = ? AND payment_method = 'REFERENCE'
+          ORDER BY created_at DESC LIMIT 1`,
+    args: [orderGid],
+  });
+  const existingRows = normalizeRows(existingResult);
+  if (existingRows.length > 0) {
+    const existing = existingRows[0];
+    return buildReferenceResult({
+      reference: existing.reference,
+      amount: order.amount,
+      currencyCode: order.currency,
+      expiresAt: existing.expires_at || expiresAt,
+    });
+  }
+
+  if (isExpiredTimestamp(expiresAt)) {
+    return buildReferenceResult({
+      reference: null,
+      amount: order.amount,
+      currencyCode: order.currency,
+      expiresAt,
+    });
+  }
+
+  const digits = getReferenceDigits();
+  for (let attempt = 0; attempt < REFERENCE_INSERT_RETRIES; attempt += 1) {
+    const paymentId = uuidv4();
+    const reference = generateNumericReference(digits);
+
+    try {
+      await db.execute({
+        sql: `INSERT INTO multicaixa_payments
+              (id, shopify_order_gid, order_number, reference, amount_minor, currency, purchase_token, expires_at, status, payment_method)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CREATED', 'REFERENCE')`,
+        args: [
+          paymentId,
+          orderGid,
+          order.name,
+          reference,
+          amountMinor,
+          order.currency,
+          null,
+          expiresAt,
+        ],
+      });
+
+      return buildReferenceResult({
+        reference,
+        amount: order.amount,
+        currencyCode: order.currency,
+        expiresAt,
+      });
+    } catch (err) {
+      if (isUniqueReferenceConstraintError(err)) {
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw new Error("Failed to generate unique payment reference");
 }
 
 /**
@@ -282,8 +510,11 @@ async function cancelPaymentByOrder(orderGid) {
 
 module.exports = {
   createPaymentSession,
+  createOrGetReferencePayment,
   getPaymentSession,
   getPaymentStatusByOrder,
+  getPaymentMethodType,
+  PAYMENT_METHOD_TYPES,
   hasConfirmedPaymentForOrder,
   processCallback,
   cancelPaymentByOrder,

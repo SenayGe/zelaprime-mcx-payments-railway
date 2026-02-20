@@ -38,6 +38,7 @@ async function initDatabase() {
       currency TEXT DEFAULT 'AOA',
       purchase_token TEXT,
       status TEXT DEFAULT 'CREATED',
+      payment_method TEXT DEFAULT 'EXPRESS',
       callback_payload_hash TEXT,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now')),
@@ -53,6 +54,14 @@ async function initDatabase() {
       `ALTER TABLE multicaixa_payments ADD COLUMN expires_at TEXT`
     );
   }
+  const hasPaymentMethod = columns.rows?.some(
+    (row) => row.name === "payment_method"
+  );
+  if (!hasPaymentMethod) {
+    await client.execute(
+      `ALTER TABLE multicaixa_payments ADD COLUMN payment_method TEXT DEFAULT 'EXPRESS'`
+    );
+  }
 
   await client.execute(`
     CREATE INDEX IF NOT EXISTS idx_payments_order_gid ON multicaixa_payments(shopify_order_gid)
@@ -64,6 +73,10 @@ async function initDatabase() {
 
   await client.execute(`
     CREATE INDEX IF NOT EXISTS idx_payments_status ON multicaixa_payments(status)
+  `);
+
+  await client.execute(`
+    CREATE INDEX IF NOT EXISTS idx_payments_order_method ON multicaixa_payments(shopify_order_gid, payment_method)
   `);
 
   await client.execute(`

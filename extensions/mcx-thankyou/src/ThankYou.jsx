@@ -29,6 +29,12 @@ export { orderDetailsBlock };
 
 // ====== CONFIG ======
 const BACKEND_URL = "https://zelaprime-mcx-payments-railway-production.up.railway.app";
+const REFERENCE_EXPIRY_HOURS = 2;
+const PAYMENT_METHOD_TYPES = {
+  EXPRESS: "EXPRESS",
+  REFERENCE: "REFERENCE",
+  OTHER: "OTHER",
+};
 
 // ====== THANK YOU PAGE ======
 function MCXThankYou() {
@@ -62,8 +68,12 @@ function MCXPaymentPanel({ orderGid, waitForOrderId = false, missingOrderMessage
     error,
     orderData,
     paymentStatus,
+    paymentMode,
     creatingSession,
+    creatingReference,
     paymentUrl,
+    referenceData,
+    isReferenceFallback,
     handlePayClick,
     formattedAmount,
   } = useMulticaixaPayment(orderGid, {
@@ -75,7 +85,7 @@ function MCXPaymentPanel({ orderGid, waitForOrderId = false, missingOrderMessage
     return (
       <Card>
         <BlockStack spacing="tight">
-          <Heading>Pagamento por Multicaixa</Heading>
+          <Heading>Pagamento</Heading>
           <InlineStack spacing="tight" blockAlignment="center">
             <Spinner size="small" />
             <Text>A obter dados da encomenda...</Text>
@@ -89,7 +99,7 @@ function MCXPaymentPanel({ orderGid, waitForOrderId = false, missingOrderMessage
     return (
       <Card>
         <BlockStack spacing="tight">
-          <Heading>Pagamento por Multicaixa</Heading>
+          <Heading>Pagamento</Heading>
           <Text>{error}</Text>
         </BlockStack>
       </Card>
@@ -115,10 +125,55 @@ function MCXPaymentPanel({ orderGid, waitForOrderId = false, missingOrderMessage
     );
   }
 
+  if (paymentMode === PAYMENT_METHOD_TYPES.OTHER) {
+    return null;
+  }
+
+  if (paymentMode === PAYMENT_METHOD_TYPES.REFERENCE && !isReferenceFallback) {
+    return (
+      <ReferencePaymentCard
+        creatingReference={creatingReference}
+        error={error}
+        formattedAmount={formattedAmount}
+        referenceData={referenceData}
+      />
+    );
+  }
+
+  return (
+    <ExpressPaymentCard
+      creatingSession={creatingSession}
+      error={error}
+      formattedAmount={formattedAmount}
+      handlePayClick={handlePayClick}
+      paymentUrl={paymentUrl}
+      fallbackNotice={
+        isReferenceFallback
+          ? "A referência expirou. Pode concluir o pagamento com Multicaixa Express."
+          : null
+      }
+    />
+  );
+}
+
+function ExpressPaymentCard({
+  creatingSession,
+  error,
+  formattedAmount,
+  handlePayClick,
+  paymentUrl,
+  fallbackNotice,
+}) {
   return (
     <Card>
       <BlockStack spacing="base">
         <Heading>Pagamento por Multicaixa</Heading>
+
+        {fallbackNotice && (
+          <View padding="tight" background="subdued" borderRadius="base">
+            <Text size="small">{fallbackNotice}</Text>
+          </View>
+        )}
 
         {formattedAmount && (
           <BlockStack spacing="extraTight">
@@ -141,7 +196,7 @@ function MCXPaymentPanel({ orderGid, waitForOrderId = false, missingOrderMessage
           kind="primary"
           onPress={!paymentUrl ? handlePayClick : undefined}
           to={paymentUrl || undefined}
-          disabled={creatingSession || (!paymentUrl && !orderData?.gid)}
+          disabled={creatingSession}
           loading={creatingSession}
         >
           {creatingSession ? "A preparar pagamento..." : "Pagar com Multicaixa"}
@@ -165,15 +220,78 @@ function MCXPaymentPanel({ orderGid, waitForOrderId = false, missingOrderMessage
   );
 }
 
+function ReferencePaymentCard({
+  creatingReference,
+  error,
+  formattedAmount,
+  referenceData,
+}) {
+  return (
+    <Card>
+      <BlockStack spacing="base">
+        <Heading>Pagamento por Referência</Heading>
+
+        {formattedAmount && (
+          <BlockStack spacing="extraTight">
+            <Text size="small" appearance="subdued">
+              Montante a pagar
+            </Text>
+            <Text size="large" emphasis="bold">
+              {formattedAmount}
+            </Text>
+          </BlockStack>
+        )}
+
+        {!referenceData?.reference && creatingReference && (
+          <InlineStack spacing="tight" blockAlignment="center">
+            <Spinner size="small" />
+            <Text>A gerar referência de pagamento...</Text>
+          </InlineStack>
+        )}
+
+        {referenceData?.reference && (
+          <BlockStack spacing="tight">
+            <Text size="small" appearance="subdued">
+              Referência
+            </Text>
+            <Text size="large" emphasis="bold">
+              {referenceData.reference}
+            </Text>
+            <Text size="small" appearance="subdued">
+              Use esta referência num ATM/Multicaixa e conclua o pagamento até{" "}
+              {REFERENCE_EXPIRY_HOURS} horas após a criação da encomenda.
+            </Text>
+            {referenceData.expiresAt && (
+              <Text size="small" appearance="subdued">
+                Expira em {formatDateTime(referenceData.expiresAt)}.
+              </Text>
+            )}
+          </BlockStack>
+        )}
+
+        {error && (
+          <View padding="tight" background="subdued" borderRadius="base">
+            <Text size="small">{error}</Text>
+          </View>
+        )}
+      </BlockStack>
+    </Card>
+  );
+}
+
 // ====== Shared payment state ======
 function useMulticaixaPayment(orderGid, { waitForOrderId = false, missingOrderMessage } = {}) {
   const [loading, setLoading] = useState(waitForOrderId || Boolean(orderGid));
   const [error, setError] = useState(null);
   const [orderData, setOrderData] = useState(null);
   const [paymentStatus, setPaymentStatus] = useState("PENDING");
+  const [paymentMode, setPaymentMode] = useState(PAYMENT_METHOD_TYPES.EXPRESS);
   const [creatingSession, setCreatingSession] = useState(false);
+  const [creatingReference, setCreatingReference] = useState(false);
   const [paymentUrl, setPaymentUrl] = useState(null);
+  const [referenceData, setReferenceData] = useState(null);
   const autoSessionRequestedRef = useRef(false);
+  const autoReferenceRequestedRef = useRef(false);
 
   useEffect(() => {
     let live = true;
@@ -181,9 +299,12 @@ function useMulticaixaPayment(orderGid, { waitForOrderId = false, missingOrderMe
     async function fetchOrder() {
       if (!orderGid) {
         autoSessionRequestedRef.current = false;
+        autoReferenceRequestedRef.current = false;
         setOrderData(null);
         setPaymentUrl(null);
+        setReferenceData(null);
         setPaymentStatus("PENDING");
+        setPaymentMode(PAYMENT_METHOD_TYPES.EXPRESS);
 
         if (waitForOrderId) {
           setError(null);
@@ -205,15 +326,21 @@ function useMulticaixaPayment(orderGid, { waitForOrderId = false, missingOrderMe
         const json = await fetchOrderWithRetry(orderGid);
         if (!live) return;
 
+        const resolvedMode = normalizePaymentMethodType(json.paymentMethodType);
         autoSessionRequestedRef.current = false;
+        autoReferenceRequestedRef.current = false;
         setOrderData({
           gid: orderGid,
           name: json.orderName,
           amount: json.amount,
           currency: json.currencyCode,
           financialStatus: json.financialStatus,
+          createdAt: json.createdAt || null,
+          paymentMethodType: resolvedMode,
         });
+        setPaymentMode(resolvedMode);
         setPaymentUrl(null);
+        setReferenceData(null);
         setPaymentStatus(
           isPaidFinancialStatus(json.financialStatus) ? "PAID" : "PENDING"
         );
@@ -249,6 +376,29 @@ function useMulticaixaPayment(orderGid, { waitForOrderId = false, missingOrderMe
         if (isPaidFinancialStatus(json.financialStatus)) {
           setPaymentStatus("PAID");
         }
+
+        const resolvedMode = normalizePaymentMethodType(json.paymentMethodType);
+        setPaymentMode(resolvedMode);
+        setOrderData((current) =>
+          current
+            ? {
+                ...current,
+                amount: json.amount ?? current.amount,
+                currency: json.currencyCode ?? current.currency,
+                financialStatus: json.financialStatus ?? current.financialStatus,
+                createdAt: json.createdAt || current.createdAt,
+                paymentMethodType: resolvedMode,
+              }
+            : current
+        );
+
+        if (
+          resolvedMode !== PAYMENT_METHOD_TYPES.REFERENCE &&
+          referenceData
+        ) {
+          setReferenceData(null);
+          autoReferenceRequestedRef.current = false;
+        }
       } catch {
         // Ignore polling errors
       }
@@ -258,7 +408,21 @@ function useMulticaixaPayment(orderGid, { waitForOrderId = false, missingOrderMe
       live = false;
       clearInterval(pollInterval);
     };
-  }, [orderData?.gid, paymentStatus]);
+  }, [orderData?.gid, paymentStatus, referenceData]);
+
+  useEffect(() => {
+    if (!referenceData?.expiresAt || referenceData.isExpired) return;
+
+    const timer = setInterval(() => {
+      if (isExpired(referenceData.expiresAt)) {
+        setReferenceData((current) =>
+          current ? { ...current, isExpired: true } : current
+        );
+      }
+    }, 15000);
+
+    return () => clearInterval(timer);
+  }, [referenceData]);
 
   const formattedAmount = useMemo(() => {
     if (!orderData?.amount || !orderData?.currency) return null;
@@ -310,15 +474,103 @@ function useMulticaixaPayment(orderGid, { waitForOrderId = false, missingOrderMe
     }
   }, [creatingSession, orderData?.gid, paymentUrl]);
 
+  const createReferenceSession = useCallback(async () => {
+    if (!orderData?.gid) return null;
+    if (creatingReference) return null;
+    if (referenceData?.reference || referenceData?.isExpired) return referenceData;
+
+    setCreatingReference(true);
+    setError(null);
+
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/mcx/sessions/reference`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderId: orderData.gid }),
+      });
+
+      if (!res.ok) {
+        const message = await readErrorMessage(
+          res,
+          "Falha ao gerar referência de pagamento."
+        );
+        throw new Error(message);
+      }
+
+      const body = await res.json();
+      if (
+        !body ||
+        typeof body !== "object" ||
+        typeof body.isExpired !== "boolean"
+      ) {
+        throw new Error("Falha ao gerar referência de pagamento.");
+      }
+
+      const nextReferenceData = {
+        reference: body.reference || null,
+        amount: body.amount || orderData.amount || null,
+        currencyCode: body.currencyCode || orderData.currency || null,
+        expiresAt: body.expiresAt || null,
+        isExpired: Boolean(body.isExpired),
+      };
+
+      setReferenceData(nextReferenceData);
+      return nextReferenceData;
+    } catch (e) {
+      setError(e?.message || "Falha ao gerar referência de pagamento.");
+      return null;
+    } finally {
+      setCreatingReference(false);
+    }
+  }, [creatingReference, orderData?.gid, orderData?.amount, orderData?.currency, referenceData]);
+
+  const isReferenceFallback = useMemo(
+    () =>
+      paymentMode === PAYMENT_METHOD_TYPES.REFERENCE &&
+      Boolean(referenceData?.isExpired),
+    [paymentMode, referenceData?.isExpired]
+  );
+
+  const shouldShowExpressFlow = useMemo(
+    () =>
+      paymentMode === PAYMENT_METHOD_TYPES.EXPRESS || isReferenceFallback,
+    [isReferenceFallback, paymentMode]
+  );
+
   useEffect(() => {
     if (!orderData?.gid) return;
     if (paymentStatus === "PAID") return;
+    if (paymentMode !== PAYMENT_METHOD_TYPES.REFERENCE) return;
+    if (referenceData?.reference || referenceData?.isExpired) return;
+    if (autoReferenceRequestedRef.current) return;
+
+    autoReferenceRequestedRef.current = true;
+    createReferenceSession();
+  }, [
+    createReferenceSession,
+    orderData?.gid,
+    paymentMode,
+    paymentStatus,
+    referenceData?.isExpired,
+    referenceData?.reference,
+  ]);
+
+  useEffect(() => {
+    if (!orderData?.gid) return;
+    if (paymentStatus === "PAID") return;
+    if (!shouldShowExpressFlow) return;
     if (paymentUrl) return;
     if (autoSessionRequestedRef.current) return;
 
     autoSessionRequestedRef.current = true;
     createPaymentSession();
-  }, [createPaymentSession, orderData?.gid, paymentStatus, paymentUrl]);
+  }, [
+    createPaymentSession,
+    orderData?.gid,
+    paymentStatus,
+    paymentUrl,
+    shouldShowExpressFlow,
+  ]);
 
   const handlePayClick = useCallback(async () => {
     if (paymentUrl) return;
@@ -330,8 +582,12 @@ function useMulticaixaPayment(orderGid, { waitForOrderId = false, missingOrderMe
     error,
     orderData,
     paymentStatus,
+    paymentMode,
     creatingSession,
+    creatingReference,
     paymentUrl,
+    referenceData,
+    isReferenceFallback,
     handlePayClick,
     formattedAmount,
   };
@@ -365,6 +621,35 @@ function resolveOrderGid(rawOrderId) {
 
 function isPaidFinancialStatus(financialStatus) {
   return financialStatus === "PAID" || financialStatus === "PARTIALLY_PAID";
+}
+
+function normalizePaymentMethodType(paymentMethodType) {
+  if (paymentMethodType === PAYMENT_METHOD_TYPES.REFERENCE) {
+    return PAYMENT_METHOD_TYPES.REFERENCE;
+  }
+  if (paymentMethodType === PAYMENT_METHOD_TYPES.OTHER) {
+    return PAYMENT_METHOD_TYPES.OTHER;
+  }
+  return PAYMENT_METHOD_TYPES.EXPRESS;
+}
+
+function isExpired(timestamp) {
+  const ts = Date.parse(String(timestamp || ""));
+  return Number.isFinite(ts) ? Date.now() >= ts : false;
+}
+
+function formatDateTime(timestamp) {
+  const ts = Date.parse(String(timestamp || ""));
+  if (!Number.isFinite(ts)) return String(timestamp || "");
+
+  try {
+    return new Intl.DateTimeFormat("pt-AO", {
+      dateStyle: "short",
+      timeStyle: "short",
+    }).format(new Date(ts));
+  } catch {
+    return new Date(ts).toISOString();
+  }
 }
 
 async function fetchOrderWithRetry(orderGid) {

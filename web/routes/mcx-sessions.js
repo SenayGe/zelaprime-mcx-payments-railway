@@ -18,6 +18,10 @@ const createSessionLimiter = rateLimit({
   message: { error: "Too many payment sessions created, please try again later" },
 });
 
+function isValidOrderId(orderId) {
+  return typeof orderId === "string" && orderId.startsWith("gid://shopify/Order/");
+}
+
 /**
  * POST /api/mcx/sessions
  * Create a new payment session for an order
@@ -32,7 +36,7 @@ router.post("/", createSessionLimiter, async (req, res) => {
     }
 
     // Validate orderId format
-    if (!orderId.startsWith("gid://shopify/Order/")) {
+    if (!isValidOrderId(orderId)) {
       return res.status(400).json({ error: "Invalid orderId format" });
     }
 
@@ -51,6 +55,43 @@ router.post("/", createSessionLimiter, async (req, res) => {
     }
 
     return res.status(500).json({ error: "Failed to create payment session" });
+  }
+});
+
+/**
+ * POST /api/mcx/sessions/reference
+ * Create or return a manual reference payment session for an order
+ * Body: { orderId: "gid://shopify/Order/..." }
+ */
+router.post("/reference", createSessionLimiter, async (req, res) => {
+  try {
+    const { orderId } = req.body;
+
+    if (!orderId) {
+      return res.status(400).json({ error: "Missing orderId" });
+    }
+
+    if (!isValidOrderId(orderId)) {
+      return res.status(400).json({ error: "Invalid orderId format" });
+    }
+
+    const referenceSession =
+      await paymentService.createOrGetReferencePayment(orderId);
+
+    return res.json(referenceSession);
+  } catch (err) {
+    console.error("Error creating reference payment session:", err);
+
+    if (
+      err.message.includes("not pending") ||
+      err.message.includes("not configured")
+    ) {
+      return res.status(400).json({ error: err.message });
+    }
+
+    return res
+      .status(500)
+      .json({ error: "Failed to create reference payment session" });
   }
 });
 

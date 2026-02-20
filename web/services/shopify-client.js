@@ -31,7 +31,7 @@ async function getShopAndToken() {
 /**
  * Get order details from Shopify Admin API
  * @param {string} orderGid Shopify order GID (e.g., "gid://shopify/Order/123")
- * @returns {Promise<{id: string, name: string, amount: string, currency: string, financialStatus: string, statusPageUrl?: string}>}
+ * @returns {Promise<{id: string, name: string, amount: string, currency: string, financialStatus: string, createdAt?: string, paymentGatewayNames?: string[], statusPageUrl?: string}>}
  */
 async function getOrder(orderGid) {
   const { shop, token } = await getShopAndToken();
@@ -41,7 +41,9 @@ async function getOrder(orderGid) {
       order(id: $id) {
         id
         name
+        createdAt
         statusPageUrl
+        paymentGatewayNames
         displayFinancialStatus
         currentTotalPriceSet {
           shopMoney {
@@ -91,6 +93,10 @@ async function getOrder(orderGid) {
     amount: money?.amount,
     currency: money?.currencyCode,
     financialStatus: order.displayFinancialStatus,
+    createdAt: order.createdAt || null,
+    paymentGatewayNames: Array.isArray(order.paymentGatewayNames)
+      ? order.paymentGatewayNames
+      : [],
     statusPageUrl: order.statusPageUrl,
   };
 }
