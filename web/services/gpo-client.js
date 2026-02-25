@@ -6,8 +6,8 @@ const crypto = require("crypto");
 const GPO_API_URL = process.env.GPO_API_URL || "https://cerpagamentonline.emis.co.ao";
 
 const DEFAULT_MOBILE_MODE = process.env.GPO_MOBILE_MODE || "PAYMENT";
-const DEFAULT_QRCODE_MODE = process.env.GPO_QRCODE_MODE || "DISABLED";
-const DEFAULT_CARD_MODE = process.env.GPO_CARD_MODE || "AUTHORIZATION";
+const DEFAULT_QRCODE_MODE = process.env.GPO_QRCODE_MODE || "PAYMENT";
+const DEFAULT_CARD_MODE = process.env.GPO_CARD_MODE || "DISABLED";
 const DEFAULT_TERMINAL_ID = process.env.GPO_TERMINAL_ID || "";
 
 /**
