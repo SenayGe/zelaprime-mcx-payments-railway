@@ -89,6 +89,14 @@ This app's backend can now use OAuth token exchange instead of requiring a manua
 
 If `SHOPIFY_ADMIN_TOKEN` is set, the backend still uses it as a fallback.
 
+### Shopify order lookup retry tuning
+
+These optional environment variables control retries when Shopify order lookup is temporarily unavailable right after checkout:
+
+- `SHOPIFY_ORDER_LOOKUP_MAX_ATTEMPTS` (default: `4`)
+- `SHOPIFY_ORDER_LOOKUP_BASE_DELAY_MS` (default: `250`)
+- `SHOPIFY_ORDER_LOOKUP_MAX_DELAY_MS` (default: `2000`)
+
 ## Developer resources
 
 - [Introduction to Shopify apps](https://shopify.dev/docs/apps/getting-started)

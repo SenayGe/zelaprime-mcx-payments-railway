@@ -14,6 +14,22 @@ const paymentService = require("./services/payment-service");
 const shopifyClient = require("./services/shopify-client");
 
 const app = express();
+const ORDER_NOT_READY_RESPONSE = Object.freeze({
+  error: "Order not ready yet",
+  code: "ORDER_NOT_READY",
+  retryable: true,
+});
+
+function isOrderNotReadyError(err) {
+  if (typeof shopifyClient.isOrderNotReadyError === "function") {
+    return shopifyClient.isOrderNotReadyError(err);
+  }
+  return err?.code === "ORDER_NOT_READY" && err?.retryable === true;
+}
+
+function buildOrderNotReadyResponse() {
+  return { ...ORDER_NOT_READY_RESPONSE };
+}
 
 // Initialize database on cold start (best effort)
 initDatabase().catch((err) => {
@@ -86,12 +102,13 @@ app.get("/health", (_req, res) => res.send("ok"));
 
 // Original order-total endpoint (backward compatible)
 app.get("/api/order-total", async (req, res) => {
+  let orderGid = null;
   try {
     const orderId = req.query.orderId;
     if (!orderId) return res.status(400).json({ error: "Missing orderId" });
 
     const normalizedOrderId = String(orderId);
-    const orderGid = normalizedOrderId.startsWith("gid://shopify/Order/")
+    orderGid = normalizedOrderId.startsWith("gid://shopify/Order/")
       ? normalizedOrderId
       : `gid://shopify/Order/${normalizedOrderId}`;
     const ord = await shopifyClient.getOrder(orderGid);
@@ -139,6 +156,12 @@ app.get("/api/order-total", async (req, res) => {
       paymentMethodType,
     });
   } catch (e) {
+    if (isOrderNotReadyError(e)) {
+      console.warn(
+        `Order not ready for /api/order-total (${orderGid || "unknown"}): ${e.message}`
+      );
+      return res.status(409).json(buildOrderNotReadyResponse());
+    }
     console.error(e);
     res.status(500).json({ error: "Server error" });
   }
@@ -158,6 +181,7 @@ app.use("/api/auth", shopifyAuthRouter);
 
 // Email payment link (on-demand session)
 app.get("/pay/email", async (req, res) => {
+  let orderGid = null;
   try {
     const orderIdParam = Array.isArray(req.query.order_id)
       ? req.query.order_id[0]
@@ -172,7 +196,7 @@ app.get("/pay/email", async (req, res) => {
 
     const orderId = String(orderIdParam);
     const orderStatusUrl = String(statusUrlParam);
-    const orderGid = orderId.startsWith("gid://shopify/Order/")
+    orderGid = orderId.startsWith("gid://shopify/Order/")
       ? orderId
       : `gid://shopify/Order/${orderId}`;
 
@@ -192,6 +216,14 @@ app.get("/pay/email", async (req, res) => {
     const session = await paymentService.createPaymentSession(orderGid);
     return res.redirect(302, session.paymentUrl);
   } catch (err) {
+    if (isOrderNotReadyError(err)) {
+      console.warn(
+        `Order not ready for /pay/email (${orderGid || "unknown"}): ${err.message}`
+      );
+      return res
+        .status(409)
+        .send("Order not ready yet. Please retry in a few seconds.");
+    }
     console.error("Error creating email payment link:", err);
     return res.status(500).send("Failed to create payment link");
   }

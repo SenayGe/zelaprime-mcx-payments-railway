@@ -6,6 +6,19 @@ const rateLimit = require("express-rate-limit");
 const paymentService = require("../services/payment-service");
 
 const router = express.Router();
+const ORDER_NOT_READY_RESPONSE = Object.freeze({
+  error: "Order not ready yet",
+  code: "ORDER_NOT_READY",
+  retryable: true,
+});
+
+function isOrderNotReadyError(err) {
+  return err?.code === "ORDER_NOT_READY" && err?.retryable === true;
+}
+
+function buildOrderNotReadyResponse() {
+  return { ...ORDER_NOT_READY_RESPONSE };
+}
 
 // Rate limit: 10 session creations per order per 15 minutes
 const createSessionLimiter = rateLimit({
@@ -48,6 +61,11 @@ router.post("/", createSessionLimiter, async (req, res) => {
       expiresAt: session.expiresAt,
     });
   } catch (err) {
+    if (isOrderNotReadyError(err)) {
+      console.warn(`Order not ready when creating payment session: ${err.message}`);
+      return res.status(409).json(buildOrderNotReadyResponse());
+    }
+
     console.error("Error creating payment session:", err);
 
     if (err.message.includes("not pending")) {
@@ -80,6 +98,13 @@ router.post("/reference", createSessionLimiter, async (req, res) => {
 
     return res.json(referenceSession);
   } catch (err) {
+    if (isOrderNotReadyError(err)) {
+      console.warn(
+        `Order not ready when creating reference payment session: ${err.message}`
+      );
+      return res.status(409).json(buildOrderNotReadyResponse());
+    }
+
     console.error("Error creating reference payment session:", err);
 
     if (

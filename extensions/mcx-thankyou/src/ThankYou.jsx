@@ -30,6 +30,11 @@ export { orderDetailsBlock };
 // ====== CONFIG ======
 const BACKEND_URL = "https://zelaprime-mcx-payments-railway-production.up.railway.app";
 const REFERENCE_EXPIRY_HOURS = 2;
+const ORDER_FETCH_TIMEOUT_MS = 30_000;
+const ORDER_FETCH_BASE_DELAY_MS = 500;
+const ORDER_FETCH_MAX_DELAY_MS = 4_000;
+const ORDER_NOT_READY_CODE = "ORDER_NOT_READY";
+const ORDER_FETCH_FAILED_MESSAGE = "Falha ao obter dados da encomenda. Tente novamente.";
 const PAYMENT_METHOD_TYPES = {
   EXPRESS: "EXPRESS",
   REFERENCE: "REFERENCE",
@@ -75,6 +80,7 @@ function MCXPaymentPanel({ orderGid, waitForOrderId = false, missingOrderMessage
     referenceData,
     isReferenceFallback,
     handlePayClick,
+    retryOrderFetch,
     formattedAmount,
   } = useMulticaixaPayment(orderGid, {
     waitForOrderId,
@@ -101,6 +107,9 @@ function MCXPaymentPanel({ orderGid, waitForOrderId = false, missingOrderMessage
         <BlockStack spacing="tight">
           <Heading>Pagamento</Heading>
           <Text>{error}</Text>
+          <Button kind="secondary" onPress={retryOrderFetch}>
+            Tentar novamente
+          </Button>
         </BlockStack>
       </Card>
     );
@@ -284,6 +293,7 @@ function useMulticaixaPayment(orderGid, { waitForOrderId = false, missingOrderMe
   const [loading, setLoading] = useState(waitForOrderId || Boolean(orderGid));
   const [error, setError] = useState(null);
   const [orderData, setOrderData] = useState(null);
+  const [orderReloadToken, setOrderReloadToken] = useState(0);
   const [paymentStatus, setPaymentStatus] = useState("PENDING");
   const [paymentMode, setPaymentMode] = useState(PAYMENT_METHOD_TYPES.EXPRESS);
   const [creatingSession, setCreatingSession] = useState(false);
@@ -292,6 +302,17 @@ function useMulticaixaPayment(orderGid, { waitForOrderId = false, missingOrderMe
   const [referenceData, setReferenceData] = useState(null);
   const autoSessionRequestedRef = useRef(false);
   const autoReferenceRequestedRef = useRef(false);
+  const retryOrderFetch = useCallback(() => {
+    autoSessionRequestedRef.current = false;
+    autoReferenceRequestedRef.current = false;
+    setLoading(true);
+    setError(null);
+    setOrderData(null);
+    setPaymentUrl(null);
+    setReferenceData(null);
+    setPaymentStatus("PENDING");
+    setOrderReloadToken((value) => value + 1);
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -347,7 +368,7 @@ function useMulticaixaPayment(orderGid, { waitForOrderId = false, missingOrderMe
       } catch {
         if (!live) return;
         setOrderData(null);
-        setError("Falha ao obter dados da encomenda.");
+        setError(ORDER_FETCH_FAILED_MESSAGE);
       } finally {
         if (live) setLoading(false);
       }
@@ -357,7 +378,7 @@ function useMulticaixaPayment(orderGid, { waitForOrderId = false, missingOrderMe
     return () => {
       live = false;
     };
-  }, [missingOrderMessage, orderGid, waitForOrderId]);
+  }, [missingOrderMessage, orderGid, orderReloadToken, waitForOrderId]);
 
   useEffect(() => {
     if (!orderData?.gid || paymentStatus === "PAID") return;
@@ -589,6 +610,7 @@ function useMulticaixaPayment(orderGid, { waitForOrderId = false, missingOrderMe
     referenceData,
     isReferenceFallback,
     handlePayClick,
+    retryOrderFetch,
     formattedAmount,
   };
 }
@@ -653,47 +675,94 @@ function formatDateTime(timestamp) {
 }
 
 async function fetchOrderWithRetry(orderGid) {
-  const MAX_RETRIES = 6;
+  const startedAt = Date.now();
   let attempt = 0;
-  let orderJson = null;
-
-  while (attempt <= MAX_RETRIES) {
+  while (Date.now() - startedAt < ORDER_FETCH_TIMEOUT_MS) {
+    attempt += 1;
     const res = await fetch(
       `${BACKEND_URL}/api/order-total?orderId=${encodeURIComponent(orderGid)}`,
       { method: "GET" }
     );
 
     if (res.ok) {
-      orderJson = await res.json();
+      return res.json();
+    }
+
+    const errorDetails = await readErrorDetails(res);
+    if (!isRetryableOrderFetchFailure(res.status, errorDetails)) {
+      throw new Error(ORDER_FETCH_FAILED_MESSAGE);
+    }
+
+    const delayMs = getOrderFetchRetryDelayMs(attempt);
+    const elapsedMs = Date.now() - startedAt;
+    if (elapsedMs + delayMs >= ORDER_FETCH_TIMEOUT_MS) {
       break;
     }
+    await delay(delayMs);
+  }
 
-    let errorText = "";
+  throw new Error(ORDER_FETCH_FAILED_MESSAGE);
+}
+
+async function readErrorDetails(response) {
+  let code = null;
+  let retryable = false;
+  let message = "";
+  const clone = response.clone();
+
+  try {
+    const body = await response.json();
+    if (body && typeof body === "object") {
+      if (typeof body.code === "string") {
+        code = body.code;
+      }
+      if (typeof body.retryable === "boolean") {
+        retryable = body.retryable;
+      }
+      if (typeof body.error === "string") {
+        message = body.error;
+      } else if (typeof body.message === "string") {
+        message = body.message;
+      }
+    }
+  } catch {
     try {
-      errorText = await res.text();
+      message = (await clone.text()).trim();
     } catch {
-      errorText = "";
+      message = "";
     }
-
-    const looksLikeOrderNotReady =
-      res.status === 404 ||
-      errorText.includes("Order not found") ||
-      errorText.includes("order not found");
-
-    if (looksLikeOrderNotReady && attempt < MAX_RETRIES) {
-      await delay(500 * (attempt + 1));
-      attempt += 1;
-      continue;
-    }
-
-    throw new Error(`Backend ${res.status}${errorText ? `: ${errorText}` : ""}`);
   }
 
-  if (!orderJson) {
-    throw new Error("Failed to load order after retries");
+  return {
+    code,
+    retryable,
+    message,
+  };
+}
+
+function isRetryableOrderFetchFailure(status, errorDetails) {
+  if (status === 404) return true;
+  if (status >= 500 && status <= 599) return true;
+
+  if (
+    status === 409 &&
+    (errorDetails.code === ORDER_NOT_READY_CODE || errorDetails.retryable === true)
+  ) {
+    return true;
   }
 
-  return orderJson;
+  const normalizedMessage = String(errorDetails.message || "").toLowerCase();
+  return (
+    normalizedMessage.includes("order not found") ||
+    normalizedMessage.includes("order not ready")
+  );
+}
+
+function getOrderFetchRetryDelayMs(attempt) {
+  return Math.min(
+    ORDER_FETCH_MAX_DELAY_MS,
+    ORDER_FETCH_BASE_DELAY_MS * Math.pow(2, Math.max(0, attempt - 1))
+  );
 }
 
 async function readErrorMessage(response, fallbackMessage) {
