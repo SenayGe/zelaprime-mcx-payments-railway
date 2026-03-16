@@ -335,6 +335,41 @@ test("GET /pay/email rejects status URL when normalized URLs do not match", asyn
   }
 });
 
+test("GET /pay/email accepts status URL when authenticate path token matches", async () => {
+  const { app, restore } = loadAppWithMocks({
+    getOrderForEmailLink: async () => ({
+      id: "gid://shopify/Order/106",
+      financialStatus: "PENDING",
+      statusPageUrl:
+        "https://checkout.shopify.com/123/orders/634e9391d660383586ad13f4d5426b95/authenticate?key=api-key-value",
+    }),
+    createPaymentSession: async () => ({
+      paymentId: "payment-106",
+      paymentUrl: "https://example.test/pay/payment-106",
+      expiresAt: "2026-03-02T12:00:00.000Z",
+    }),
+  });
+
+  try {
+    const handler = getRouteHandler(app.router, "get", "/pay/email");
+    const req = {
+      query: {
+        id: "106",
+        order_status_url:
+          "https://www.zelaprime.com/60410527806/orders/634e9391d660383586ad13f4d5426b95/authenticate?key=email-key-value",
+      },
+    };
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    assert.equal(res.statusCode, 302);
+    assert.equal(res.redirectLocation, "https://example.test/pay/payment-106");
+  } finally {
+    restore();
+  }
+});
+
 test("GET /pay/email requires an id or order_id", async () => {
   const { app, restore } = loadAppWithMocks({
     getOrderForEmailLink: async () => {

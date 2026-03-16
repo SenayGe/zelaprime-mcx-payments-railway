@@ -53,10 +53,12 @@ function parseStatusUrl(rawUrl) {
     );
     const pathname = normalizeStatusUrlPathname(parsed.pathname);
     const search = new URLSearchParams(params).toString();
+    const orderPathMatch = pathname.match(/\/orders\/([^/]+)\/authenticate$/i);
 
     return {
       href: `${parsed.origin.toLowerCase()}${pathname}${search ? `?${search}` : ""}`,
       key: parsed.searchParams.get("key") || "",
+      orderPathToken: orderPathMatch ? orderPathMatch[1] : "",
     };
   } catch {
     return null;
@@ -74,10 +76,18 @@ function compareOrderStatusUrls(expectedUrl, providedUrl) {
       Boolean(expected?.key) &&
       Boolean(provided?.key) &&
       expected.key === provided.key,
+    orderPathTokenMatched:
+      Boolean(expected?.orderPathToken) &&
+      Boolean(provided?.orderPathToken) &&
+      expected.orderPathToken === provided.orderPathToken,
     matches: Boolean(
       expected &&
         provided &&
-        (expected.href === provided.href || expected.key === provided.key)
+        (
+          expected.href === provided.href ||
+          expected.key === provided.key ||
+          expected.orderPathToken === provided.orderPathToken
+        )
     ),
   };
 }
@@ -276,6 +286,7 @@ app.get("/pay/email", async (req, res) => {
         expectedStatusUrlParsed: statusUrlComparison.expectedParsed,
         providedStatusUrlParsed: statusUrlComparison.providedParsed,
         statusUrlKeyMatched: statusUrlComparison.keyMatched,
+        statusUrlOrderPathTokenMatched: statusUrlComparison.orderPathTokenMatched,
         statusUrlMatched: statusUrlComparison.matches,
       });
       return res.status(401).send("Invalid order_status_url");
