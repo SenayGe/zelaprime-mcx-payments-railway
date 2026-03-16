@@ -124,6 +124,39 @@ async function fetchOrderById({ shop, token, orderGid }) {
   return json.data?.order || null;
 }
 
+async function fetchOrderForEmailLinkById({ shop, token, orderGid }) {
+  const query = `
+    query ($id: ID!) {
+      order(id: $id) {
+        id
+        statusPageUrl(audience: CUSTOMERVIEW, notificationUsage: WEB)
+        displayFinancialStatus
+      }
+    }
+  `;
+
+  const response = await fetch(`https://${shop}/admin/api/2025-07/graphql.json`, {
+    method: "POST",
+    headers: {
+      "X-Shopify-Access-Token": token,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ query, variables: { id: orderGid } }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Shopify API error ${response.status}: ${text}`);
+  }
+
+  const json = await response.json();
+  if (json.errors) {
+    throw new Error(`Shopify GraphQL error: ${JSON.stringify(json.errors)}`);
+  }
+
+  return json.data?.order || null;
+}
+
 function normalizeOrder(order) {
   const money = order.currentTotalPriceSet?.shopMoney || order.totalPriceSet?.shopMoney;
 
@@ -141,6 +174,14 @@ function normalizeOrder(order) {
   };
 }
 
+function normalizeEmailLinkOrder(order) {
+  return {
+    id: order.id,
+    financialStatus: order.displayFinancialStatus,
+    statusPageUrl: order.statusPageUrl,
+  };
+}
+
 /**
  * Get order details from Shopify Admin API
  * @param {string} orderGid Shopify order GID (e.g., "gid://shopify/Order/123")
@@ -154,6 +195,36 @@ async function getOrder(orderGid) {
     const order = await fetchOrderById({ shop, token, orderGid });
     if (order) {
       return normalizeOrder(order);
+    }
+
+    if (attempt >= retryConfig.maxAttempts) {
+      throw buildOrderNotReadyError(orderGid, attempt);
+    }
+
+    const backoffMs = Math.min(
+      retryConfig.maxDelayMs,
+      retryConfig.baseDelayMs * Math.pow(2, attempt - 1)
+    );
+    await delay(backoffMs);
+  }
+
+  throw buildOrderNotReadyError(orderGid, retryConfig.maxAttempts);
+}
+
+/**
+ * Get order fields needed only for validating customer email payment links.
+ * This intentionally uses a separate query so normal payment flow behavior stays unchanged.
+ * @param {string} orderGid Shopify order GID
+ * @returns {Promise<{id: string, financialStatus: string, statusPageUrl?: string}>}
+ */
+async function getOrderForEmailLink(orderGid) {
+  const { shop, token } = await getShopAndToken();
+  const retryConfig = getOrderLookupRetryConfig();
+
+  for (let attempt = 1; attempt <= retryConfig.maxAttempts; attempt += 1) {
+    const order = await fetchOrderForEmailLinkById({ shop, token, orderGid });
+    if (order) {
+      return normalizeEmailLinkOrder(order);
     }
 
     if (attempt >= retryConfig.maxAttempts) {
@@ -259,6 +330,7 @@ function verifyWebhookSignature(rawBody, hmacHeader) {
 
 module.exports = {
   getOrder,
+  getOrderForEmailLink,
   markOrderAsPaid,
   isOrderNotReadyError,
   verifyWebhookSignature,

@@ -31,6 +31,48 @@ function buildOrderNotReadyResponse() {
   return { ...ORDER_NOT_READY_RESPONSE };
 }
 
+function getSingleQueryValue(value) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function normalizeStatusUrlPathname(pathname) {
+  const normalized = String(pathname || "").replace(/\/+$/, "");
+  return normalized || "/";
+}
+
+function parseStatusUrl(rawUrl) {
+  try {
+    const parsed = new URL(String(rawUrl || "").trim());
+    const params = Array.from(parsed.searchParams.entries()).sort(
+      ([leftKey, leftValue], [rightKey, rightValue]) => {
+        if (leftKey === rightKey) {
+          return leftValue.localeCompare(rightValue);
+        }
+        return leftKey.localeCompare(rightKey);
+      }
+    );
+    const pathname = normalizeStatusUrlPathname(parsed.pathname);
+    const search = new URLSearchParams(params).toString();
+
+    return {
+      href: `${parsed.origin.toLowerCase()}${pathname}${search ? `?${search}` : ""}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function compareOrderStatusUrls(expectedUrl, providedUrl) {
+  const expected = parseStatusUrl(expectedUrl);
+  const provided = parseStatusUrl(providedUrl);
+
+  return {
+    expectedParsed: Boolean(expected),
+    providedParsed: Boolean(provided),
+    matches: Boolean(expected && provided && expected.href === provided.href),
+  };
+}
+
 // Initialize database on cold start (best effort)
 initDatabase().catch((err) => {
   console.error("Failed to initialize database:", err);
@@ -183,30 +225,50 @@ app.use("/api/auth", shopifyAuthRouter);
 app.get("/pay/email", async (req, res) => {
   let orderGid = null;
   try {
-    const orderIdParam = Array.isArray(req.query.order_id)
-      ? req.query.order_id[0]
-      : req.query.order_id;
-    const statusUrlParam = Array.isArray(req.query.order_status_url)
-      ? req.query.order_status_url[0]
-      : req.query.order_status_url;
+    const idParam = getSingleQueryValue(req.query.id);
+    const orderIdParam = getSingleQueryValue(req.query.order_id);
+    const statusUrlParam = getSingleQueryValue(req.query.order_status_url);
+    const requestContext = {
+      hasIdParam: Boolean(idParam),
+      hasOrderIdParam: Boolean(orderIdParam),
+      hasOrderStatusUrl: Boolean(statusUrlParam),
+    };
+    const orderIdParamValue = idParam || orderIdParam;
 
-    if (!orderIdParam || !statusUrlParam) {
-      return res.status(400).send("Missing order_id or order_status_url");
+    if (!orderIdParamValue) {
+      console.warn("Email payment link missing order identifier", requestContext);
+      return res.status(400).send("Missing id or order_id");
     }
 
-    const orderId = String(orderIdParam);
-    const orderStatusUrl = String(statusUrlParam);
+    if (!statusUrlParam) {
+      console.warn("Email payment link missing order_status_url", requestContext);
+      return res.status(400).send("Missing order_status_url");
+    }
+
+    const orderId = String(orderIdParamValue).trim();
+    const orderStatusUrl = String(statusUrlParam).trim();
     orderGid = orderId.startsWith("gid://shopify/Order/")
       ? orderId
       : `gid://shopify/Order/${orderId}`;
 
-    const order = await shopifyClient.getOrder(orderGid);
+    const order = await shopifyClient.getOrderForEmailLink(orderGid);
     if (!order?.statusPageUrl) {
-      return res.status(400).send("Missing order status URL");
+      console.warn("Email payment link missing customer status URL", requestContext);
+      return res.status(500).send("Order is missing customer status URL");
     }
 
-    if (order.statusPageUrl !== orderStatusUrl) {
-      return res.status(401).send("Invalid order status URL");
+    const statusUrlComparison = compareOrderStatusUrls(
+      order.statusPageUrl,
+      orderStatusUrl
+    );
+    if (!statusUrlComparison.matches) {
+      console.warn("Email payment link rejected", {
+        ...requestContext,
+        expectedStatusUrlParsed: statusUrlComparison.expectedParsed,
+        providedStatusUrlParsed: statusUrlComparison.providedParsed,
+        statusUrlMatched: statusUrlComparison.matches,
+      });
+      return res.status(401).send("Invalid order_status_url");
     }
 
     if (order.financialStatus !== "PENDING" && order.financialStatus !== "PARTIALLY_PAID") {

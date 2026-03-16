@@ -97,6 +97,23 @@ These optional environment variables control retries when Shopify order lookup i
 - `SHOPIFY_ORDER_LOOKUP_BASE_DELAY_MS` (default: `250`)
 - `SHOPIFY_ORDER_LOOKUP_MAX_DELAY_MS` (default: `2000`)
 
+### Shopify email payment link
+
+Use Shopify notification variables directly in the customer email template:
+
+```liquid
+<a target="_blank"
+   href="https://zelaprime-mcx-payments-railway-production.up.railway.app/pay/email?id={{ id }}&order_status_url={{ order_status_url | url_encode }}">
+  Complete payment
+</a>
+```
+
+Notes:
+
+- Use `id`, not `order.id`, in Shopify customer email templates.
+- `order_status_url` must be URL-encoded when nested inside the payment link.
+- This email link does not pre-generate a payment session. It creates a fresh session when the customer clicks it.
+
 ## Developer resources
 
 - [Introduction to Shopify apps](https://shopify.dev/docs/apps/getting-started)

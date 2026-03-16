@@ -15,7 +15,7 @@ function createNoopRouter() {
   return express.Router();
 }
 
-function loadAppWithMocks({ getOrder }) {
+function loadAppWithMocks({ getOrder, getOrderForEmailLink, createPaymentSession } = {}) {
   const previousCache = new Map([
     [appPath, require.cache[appPath]],
     [databasePath, require.cache[databasePath]],
@@ -52,6 +52,13 @@ function loadAppWithMocks({ getOrder }) {
     exports: {
       getPaymentMethodType: () => "EXPRESS",
       hasConfirmedPaymentForOrder: async () => false,
+      createPaymentSession:
+        createPaymentSession ||
+        (async () => ({
+          paymentId: "payment-123",
+          paymentUrl: "https://example.test/pay/payment-123",
+          expiresAt: "2026-03-02T12:00:00.000Z",
+        })),
     },
   };
 
@@ -61,6 +68,7 @@ function loadAppWithMocks({ getOrder }) {
     loaded: true,
     exports: {
       getOrder,
+      getOrderForEmailLink: getOrderForEmailLink || getOrder,
       markOrderAsPaid: async () => {},
       isOrderNotReadyError: (err) =>
         err?.code === "ORDER_NOT_READY" && err?.retryable === true,
@@ -134,6 +142,8 @@ function createMockResponse() {
   const response = {
     statusCode: 200,
     body: undefined,
+    redirectCode: undefined,
+    redirectLocation: undefined,
     status(code) {
       this.statusCode = code;
       return this;
@@ -144,6 +154,12 @@ function createMockResponse() {
     },
     send(payload) {
       this.body = payload;
+      return this;
+    },
+    redirect(code, location) {
+      this.statusCode = code;
+      this.redirectCode = code;
+      this.redirectLocation = location;
       return this;
     },
   };
@@ -212,6 +228,159 @@ test("GET /api/order-total preserves success payload for valid order", async () 
     assert.equal(res.body.financialStatus, "PENDING");
     assert.equal(res.body.paymentMethodType, "EXPRESS");
     assert.deepEqual(res.body.paymentGatewayNames, ["MULTICAIXA Express"]);
+  } finally {
+    restore();
+  }
+});
+
+test("GET /pay/email accepts id alias when normalized order_status_url matches", async () => {
+  const { app, restore } = loadAppWithMocks({
+    getOrderForEmailLink: async () => ({
+      id: "gid://shopify/Order/102",
+      financialStatus: "PENDING",
+      statusPageUrl:
+        "https://checkout.shopify.com/123/orders/abc/authenticate/?b=2&a=1",
+    }),
+    createPaymentSession: async (orderId) => ({
+      paymentId: "payment-102",
+      paymentUrl: `https://example.test/pay/${encodeURIComponent(orderId)}`,
+      expiresAt: "2026-03-02T12:00:00.000Z",
+    }),
+  });
+
+  try {
+    const handler = getRouteHandler(app.router, "get", "/pay/email");
+    const req = {
+      query: {
+        id: "102",
+        order_status_url:
+          "https://CHECKOUT.SHOPIFY.COM/123/orders/abc/authenticate?a=1&b=2",
+      },
+    };
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    assert.equal(res.statusCode, 302);
+    assert.equal(
+      res.redirectLocation,
+      "https://example.test/pay/gid%3A%2F%2Fshopify%2FOrder%2F102"
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("GET /pay/email accepts order_id alias for backward compatibility", async () => {
+  const { app, restore } = loadAppWithMocks({
+    getOrderForEmailLink: async () => ({
+      id: "gid://shopify/Order/104",
+      financialStatus: "PENDING",
+      statusPageUrl: "https://checkout.shopify.com/123/orders/xyz/authenticate?key=abc",
+    }),
+    createPaymentSession: async () => ({
+      paymentId: "payment-104",
+      paymentUrl: "https://example.test/pay/payment-104",
+      expiresAt: "2026-03-02T12:00:00.000Z",
+    }),
+  });
+
+  try {
+    const handler = getRouteHandler(app.router, "get", "/pay/email");
+    const req = {
+      query: {
+        order_id: "104",
+        order_status_url:
+          "https://checkout.shopify.com/123/orders/xyz/authenticate?key=abc",
+      },
+    };
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    assert.equal(res.statusCode, 302);
+    assert.equal(res.redirectLocation, "https://example.test/pay/payment-104");
+  } finally {
+    restore();
+  }
+});
+
+test("GET /pay/email rejects status URL when normalized URLs do not match", async () => {
+  const { app, restore } = loadAppWithMocks({
+    getOrderForEmailLink: async () => ({
+      id: "gid://shopify/Order/103",
+      financialStatus: "PENDING",
+      statusPageUrl:
+        "https://checkout.shopify.com/123/orders/abc/authenticate?key=expected-key",
+    }),
+  });
+
+  try {
+    const handler = getRouteHandler(app.router, "get", "/pay/email");
+    const req = {
+      query: {
+        order_id: "103",
+        order_status_url:
+          "https://store.example/orders/103?utm_source=email&key=wrong-key",
+      },
+    };
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    assert.equal(res.statusCode, 401);
+    assert.equal(res.body, "Invalid order_status_url");
+  } finally {
+    restore();
+  }
+});
+
+test("GET /pay/email requires an id or order_id", async () => {
+  const { app, restore } = loadAppWithMocks({
+    getOrderForEmailLink: async () => {
+      throw new Error("getOrderForEmailLink should not be called");
+    },
+  });
+
+  try {
+    const handler = getRouteHandler(app.router, "get", "/pay/email");
+    const req = {
+      query: {
+        order_status_url:
+          "https://checkout.shopify.com/123/orders/abc/authenticate?key=expected-key",
+      },
+    };
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.body, "Missing id or order_id");
+  } finally {
+    restore();
+  }
+});
+
+test("GET /pay/email requires order_status_url", async () => {
+  const { app, restore } = loadAppWithMocks({
+    getOrderForEmailLink: async () => {
+      throw new Error("getOrderForEmailLink should not be called");
+    },
+  });
+
+  try {
+    const handler = getRouteHandler(app.router, "get", "/pay/email");
+    const req = {
+      query: {
+        id: "105",
+      },
+    };
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.body, "Missing order_status_url");
   } finally {
     restore();
   }

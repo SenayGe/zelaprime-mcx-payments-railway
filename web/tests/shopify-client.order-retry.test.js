@@ -108,6 +108,51 @@ test("getOrder retries transient null order responses and returns order data", a
   );
 });
 
+test("getOrderForEmailLink requests the customer-view web status page URL", async () => {
+  await withEnv(
+    {
+      SHOPIFY_SHOP: "example.myshopify.com",
+      SHOPIFY_ADMIN_TOKEN: "test-admin-token",
+      SHOPIFY_ORDER_LOOKUP_MAX_ATTEMPTS: "1",
+      SHOPIFY_ORDER_LOOKUP_BASE_DELAY_MS: "1",
+      SHOPIFY_ORDER_LOOKUP_MAX_DELAY_MS: "1",
+    },
+    async () => {
+      const previousFetch = global.fetch;
+      let capturedQuery = "";
+
+      global.fetch = async (_url, options = {}) => {
+        const payload = JSON.parse(String(options.body || "{}"));
+        capturedQuery = String(payload.query || "");
+
+        return {
+          ok: true,
+          json: async () => ({
+            data: {
+              order: buildGraphQlOrder("gid://shopify/Order/321"),
+            },
+          }),
+        };
+      };
+
+      try {
+        const shopifyClient = loadFreshShopifyClient();
+        const order = await shopifyClient.getOrderForEmailLink("gid://shopify/Order/321");
+
+        assert.equal(order.id, "gid://shopify/Order/321");
+        assert.equal(order.financialStatus, "PENDING");
+        assert.equal(order.statusPageUrl, "https://store.example/orders/1001");
+        assert.match(
+          capturedQuery,
+          /statusPageUrl\(audience:\s*CUSTOMERVIEW,\s*notificationUsage:\s*WEB\)/
+        );
+      } finally {
+        global.fetch = previousFetch;
+      }
+    }
+  );
+});
+
 test("getOrder throws tagged ORDER_NOT_READY after max attempts", async () => {
   await withEnv(
     {
