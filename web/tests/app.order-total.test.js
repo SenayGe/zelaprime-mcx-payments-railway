@@ -233,13 +233,13 @@ test("GET /api/order-total preserves success payload for valid order", async () 
   }
 });
 
-test("GET /pay/email accepts id alias when normalized order_status_url matches", async () => {
+test("GET /pay/email accepts id alias when order_status_url key matches", async () => {
   const { app, restore } = loadAppWithMocks({
     getOrderForEmailLink: async () => ({
       id: "gid://shopify/Order/102",
       financialStatus: "PENDING",
       statusPageUrl:
-        "https://checkout.shopify.com/123/orders/abc/authenticate/?b=2&a=1",
+        "https://checkout.shopify.com/123/orders/abc/authenticate?key=same-key",
     }),
     createPaymentSession: async (orderId) => ({
       paymentId: "payment-102",
@@ -254,7 +254,7 @@ test("GET /pay/email accepts id alias when normalized order_status_url matches",
       query: {
         id: "102",
         order_status_url:
-          "https://CHECKOUT.SHOPIFY.COM/123/orders/abc/authenticate?a=1&b=2",
+          "https://www.zelaprime.com/60410527806/orders/abc/authenticate?key=same-key",
       },
     };
     const res = createMockResponse();

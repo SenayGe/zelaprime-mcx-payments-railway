@@ -56,6 +56,7 @@ function parseStatusUrl(rawUrl) {
 
     return {
       href: `${parsed.origin.toLowerCase()}${pathname}${search ? `?${search}` : ""}`,
+      key: parsed.searchParams.get("key") || "",
     };
   } catch {
     return null;
@@ -69,7 +70,15 @@ function compareOrderStatusUrls(expectedUrl, providedUrl) {
   return {
     expectedParsed: Boolean(expected),
     providedParsed: Boolean(provided),
-    matches: Boolean(expected && provided && expected.href === provided.href),
+    keyMatched:
+      Boolean(expected?.key) &&
+      Boolean(provided?.key) &&
+      expected.key === provided.key,
+    matches: Boolean(
+      expected &&
+        provided &&
+        (expected.href === provided.href || expected.key === provided.key)
+    ),
   };
 }
 
@@ -266,6 +275,7 @@ app.get("/pay/email", async (req, res) => {
         ...requestContext,
         expectedStatusUrlParsed: statusUrlComparison.expectedParsed,
         providedStatusUrlParsed: statusUrlComparison.providedParsed,
+        statusUrlKeyMatched: statusUrlComparison.keyMatched,
         statusUrlMatched: statusUrlComparison.matches,
       });
       return res.status(401).send("Invalid order_status_url");
