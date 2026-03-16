@@ -31,6 +31,50 @@ function buildOrderNotReadyResponse() {
   return { ...ORDER_NOT_READY_RESPONSE };
 }
 
+function normalizeStatusUrlPathname(pathname) {
+  const normalized = String(pathname || "").replace(/\/+$/, "");
+  return normalized || "/";
+}
+
+function parseStatusUrl(rawUrl) {
+  try {
+    const parsed = new URL(String(rawUrl || "").trim());
+    const params = Array.from(parsed.searchParams.entries()).sort(
+      ([leftKey, leftValue], [rightKey, rightValue]) => {
+        if (leftKey === rightKey) {
+          return leftValue.localeCompare(rightValue);
+        }
+        return leftKey.localeCompare(rightKey);
+      }
+    );
+    const pathname = normalizeStatusUrlPathname(parsed.pathname);
+    const search = new URLSearchParams(params).toString();
+
+    return {
+      href: `${parsed.origin.toLowerCase()}${pathname}${search ? `?${search}` : ""}`,
+      pathname,
+      key: parsed.searchParams.get("key") || "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isMatchingOrderStatusUrl(expectedUrl, providedUrl) {
+  const expected = parseStatusUrl(expectedUrl);
+  const provided = parseStatusUrl(providedUrl);
+
+  if (!expected || !provided) {
+    return false;
+  }
+
+  if (expected.href === provided.href) {
+    return true;
+  }
+
+  return Boolean(expected.key) && expected.key === provided.key;
+}
+
 // Initialize database on cold start (best effort)
 initDatabase().catch((err) => {
   console.error("Failed to initialize database:", err);
@@ -205,7 +249,7 @@ app.get("/pay/email", async (req, res) => {
       return res.status(400).send("Missing order status URL");
     }
 
-    if (order.statusPageUrl !== orderStatusUrl) {
+    if (!isMatchingOrderStatusUrl(order.statusPageUrl, orderStatusUrl)) {
       return res.status(401).send("Invalid order status URL");
     }
 

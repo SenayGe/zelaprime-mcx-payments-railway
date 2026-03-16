@@ -15,7 +15,7 @@ function createNoopRouter() {
   return express.Router();
 }
 
-function loadAppWithMocks({ getOrder }) {
+function loadAppWithMocks({ getOrder, createPaymentSession } = {}) {
   const previousCache = new Map([
     [appPath, require.cache[appPath]],
     [databasePath, require.cache[databasePath]],
@@ -52,6 +52,13 @@ function loadAppWithMocks({ getOrder }) {
     exports: {
       getPaymentMethodType: () => "EXPRESS",
       hasConfirmedPaymentForOrder: async () => false,
+      createPaymentSession:
+        createPaymentSession ||
+        (async () => ({
+          paymentId: "payment-123",
+          paymentUrl: "https://example.test/pay/payment-123",
+          expiresAt: "2026-03-02T12:00:00.000Z",
+        })),
     },
   };
 
@@ -134,6 +141,8 @@ function createMockResponse() {
   const response = {
     statusCode: 200,
     body: undefined,
+    redirectCode: undefined,
+    redirectLocation: undefined,
     status(code) {
       this.statusCode = code;
       return this;
@@ -144,6 +153,12 @@ function createMockResponse() {
     },
     send(payload) {
       this.body = payload;
+      return this;
+    },
+    redirect(code, location) {
+      this.statusCode = code;
+      this.redirectCode = code;
+      this.redirectLocation = location;
       return this;
     },
   };
@@ -212,6 +227,80 @@ test("GET /api/order-total preserves success payload for valid order", async () 
     assert.equal(res.body.financialStatus, "PENDING");
     assert.equal(res.body.paymentMethodType, "EXPRESS");
     assert.deepEqual(res.body.paymentGatewayNames, ["MULTICAIXA Express"]);
+  } finally {
+    restore();
+  }
+});
+
+test("GET /pay/email accepts equivalent status URL when the Shopify key matches", async () => {
+  const { app, restore } = loadAppWithMocks({
+    getOrder: async () => ({
+      id: "gid://shopify/Order/102",
+      name: "#102",
+      amount: "500.00",
+      currency: "AOA",
+      financialStatus: "PENDING",
+      statusPageUrl:
+        "https://checkout.shopify.com/123/orders/abc/authenticate?key=secret-key",
+    }),
+    createPaymentSession: async (orderId) => ({
+      paymentId: "payment-102",
+      paymentUrl: `https://example.test/pay/${encodeURIComponent(orderId)}`,
+      expiresAt: "2026-03-02T12:00:00.000Z",
+    }),
+  });
+
+  try {
+    const handler = getRouteHandler(app.router, "get", "/pay/email");
+    const req = {
+      query: {
+        order_id: "102",
+        order_status_url:
+          "https://store.example/orders/102?utm_source=email&key=secret-key",
+      },
+    };
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    assert.equal(res.statusCode, 302);
+    assert.equal(
+      res.redirectLocation,
+      "https://example.test/pay/gid%3A%2F%2Fshopify%2FOrder%2F102"
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("GET /pay/email rejects status URL when the Shopify key does not match", async () => {
+  const { app, restore } = loadAppWithMocks({
+    getOrder: async () => ({
+      id: "gid://shopify/Order/103",
+      name: "#103",
+      amount: "500.00",
+      currency: "AOA",
+      financialStatus: "PENDING",
+      statusPageUrl:
+        "https://checkout.shopify.com/123/orders/abc/authenticate?key=expected-key",
+    }),
+  });
+
+  try {
+    const handler = getRouteHandler(app.router, "get", "/pay/email");
+    const req = {
+      query: {
+        order_id: "103",
+        order_status_url:
+          "https://store.example/orders/103?utm_source=email&key=wrong-key",
+      },
+    };
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    assert.equal(res.statusCode, 401);
+    assert.equal(res.body, "Invalid order status URL");
   } finally {
     restore();
   }
