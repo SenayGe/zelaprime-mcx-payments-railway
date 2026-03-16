@@ -1,4 +1,5 @@
 // web/app.js
+const crypto = require("crypto");
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
@@ -29,6 +30,41 @@ function isOrderNotReadyError(err) {
 
 function buildOrderNotReadyResponse() {
   return { ...ORDER_NOT_READY_RESPONSE };
+}
+
+function getEmailLinkSecret() {
+  return String(process.env.EMAIL_LINK_SECRET || "").trim();
+}
+
+function buildEmailLinkHash(orderId, secret) {
+  return crypto
+    .createHash("md5")
+    .update(`${String(orderId || "")}:${String(secret || "")}`)
+    .digest("hex");
+}
+
+function secureCompare(left, right) {
+  const leftBuffer = Buffer.from(String(left || ""), "utf8");
+  const rightBuffer = Buffer.from(String(right || ""), "utf8");
+
+  if (leftBuffer.length === 0 || leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function hasValidEmailLinkHash(orderId, providedHash) {
+  const secret = getEmailLinkSecret();
+  if (!secret) {
+    return false;
+  }
+
+  const expectedHash = buildEmailLinkHash(orderId, secret);
+  return secureCompare(
+    expectedHash,
+    String(providedHash || "").trim().toLowerCase()
+  );
 }
 
 function normalizeStatusUrlPathname(pathname) {
@@ -233,23 +269,45 @@ app.get("/pay/email", async (req, res) => {
     const statusUrlParam = Array.isArray(req.query.order_status_url)
       ? req.query.order_status_url[0]
       : req.query.order_status_url;
+    const hashParam = Array.isArray(req.query.hash)
+      ? req.query.hash[0]
+      : req.query.hash;
+    const sigParam = Array.isArray(req.query.sig)
+      ? req.query.sig[0]
+      : req.query.sig;
+    const emailHashParam = hashParam || sigParam;
 
-    if (!orderIdParam || !statusUrlParam) {
-      return res.status(400).send("Missing order_id or order_status_url");
+    if (!orderIdParam || (!statusUrlParam && !emailHashParam)) {
+      return res.status(400).send("Missing order_id or email proof");
     }
 
     const orderId = String(orderIdParam);
-    const orderStatusUrl = String(statusUrlParam);
+    const orderStatusUrl = statusUrlParam ? String(statusUrlParam) : "";
+    const emailHash = emailHashParam ? String(emailHashParam) : "";
     orderGid = orderId.startsWith("gid://shopify/Order/")
       ? orderId
       : `gid://shopify/Order/${orderId}`;
 
+    const hasValidHash = emailHash
+      ? hasValidEmailLinkHash(orderId, emailHash)
+      : false;
+
+    if (emailHash && !hasValidHash && !orderStatusUrl) {
+      if (!getEmailLinkSecret()) {
+        return res.status(500).send("Email payment link is not configured");
+      }
+      return res.status(401).send("Invalid email payment link");
+    }
+
     const order = await shopifyClient.getOrder(orderGid);
-    if (!order?.statusPageUrl) {
+    if (!hasValidHash && !order?.statusPageUrl) {
       return res.status(400).send("Missing order status URL");
     }
 
-    if (!isMatchingOrderStatusUrl(order.statusPageUrl, orderStatusUrl)) {
+    if (
+      !hasValidHash &&
+      !isMatchingOrderStatusUrl(order.statusPageUrl, orderStatusUrl)
+    ) {
       return res.status(401).send("Invalid order status URL");
     }
 

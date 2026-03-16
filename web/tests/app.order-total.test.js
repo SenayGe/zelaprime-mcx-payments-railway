@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("crypto");
 const express = require("express");
 
 const appPath = require.resolve("../app");
@@ -166,6 +167,34 @@ function createMockResponse() {
   return response;
 }
 
+async function withEnv(overrides, fn) {
+  const previous = {};
+
+  for (const [key, value] of Object.entries(overrides)) {
+    previous[key] = Object.prototype.hasOwnProperty.call(process.env, key)
+      ? process.env[key]
+      : null;
+
+    if (value == null) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+
+  try {
+    return await fn();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value == null) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
 test("GET /api/order-total returns 409 contract for retryable ORDER_NOT_READY", async () => {
   const retryableError = new Error("Order not ready yet");
   retryableError.code = "ORDER_NOT_READY";
@@ -271,6 +300,48 @@ test("GET /pay/email accepts equivalent status URL when the Shopify key matches"
   } finally {
     restore();
   }
+});
+
+test("GET /pay/email accepts a signed hash without order_status_url", async () => {
+  await withEnv({ EMAIL_LINK_SECRET: "email-secret" }, async () => {
+    const { app, restore } = loadAppWithMocks({
+      getOrder: async () => ({
+        id: "gid://shopify/Order/104",
+        name: "#104",
+        amount: "500.00",
+        currency: "AOA",
+        financialStatus: "PENDING",
+        statusPageUrl:
+          "https://checkout.shopify.com/123/orders/abc/authenticate?key=expected-key",
+      }),
+      createPaymentSession: async () => ({
+        paymentId: "payment-104",
+        paymentUrl: "https://example.test/pay/payment-104",
+        expiresAt: "2026-03-02T12:00:00.000Z",
+      }),
+    });
+
+    try {
+      const handler = getRouteHandler(app.router, "get", "/pay/email");
+      const req = {
+        query: {
+          order_id: "104",
+          hash: crypto
+            .createHash("md5")
+            .update("104:email-secret")
+            .digest("hex"),
+        },
+      };
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      assert.equal(res.statusCode, 302);
+      assert.equal(res.redirectLocation, "https://example.test/pay/payment-104");
+    } finally {
+      restore();
+    }
+  });
 });
 
 test("GET /pay/email rejects status URL when the Shopify key does not match", async () => {

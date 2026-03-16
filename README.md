@@ -79,6 +79,7 @@ This app's backend can now use OAuth token exchange instead of requiring a manua
    - `SHOPIFY_API_SECRET`
    - `SHOPIFY_SHOP` (for example `yvimv1-hc.myshopify.com`)
    - `APP_URL` (for example `https://zelaprime-mcx-payments-railway-production.up.railway.app`)
+   - `EMAIL_LINK_SECRET` (shared secret used to validate reusable payment links embedded in Shopify emails)
 1. Start OAuth install by visiting:
    - `GET /api/auth/install?shop=<your-shop>.myshopify.com`
 1. Shopify redirects to:
