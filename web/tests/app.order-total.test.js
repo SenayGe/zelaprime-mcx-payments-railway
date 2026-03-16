@@ -1,6 +1,5 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const crypto = require("crypto");
 const express = require("express");
 
 const appPath = require.resolve("../app");
@@ -167,34 +166,6 @@ function createMockResponse() {
   return response;
 }
 
-async function withEnv(overrides, fn) {
-  const previous = {};
-
-  for (const [key, value] of Object.entries(overrides)) {
-    previous[key] = Object.prototype.hasOwnProperty.call(process.env, key)
-      ? process.env[key]
-      : null;
-
-    if (value == null) {
-      delete process.env[key];
-    } else {
-      process.env[key] = value;
-    }
-  }
-
-  try {
-    return await fn();
-  } finally {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value == null) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
-    }
-  }
-}
-
 test("GET /api/order-total returns 409 contract for retryable ORDER_NOT_READY", async () => {
   const retryableError = new Error("Order not ready yet");
   retryableError.code = "ORDER_NOT_READY";
@@ -261,7 +232,7 @@ test("GET /api/order-total preserves success payload for valid order", async () 
   }
 });
 
-test("GET /pay/email accepts equivalent status URL when the Shopify key matches", async () => {
+test("GET /pay/email accepts id alias when normalized order_status_url matches", async () => {
   const { app, restore } = loadAppWithMocks({
     getOrder: async () => ({
       id: "gid://shopify/Order/102",
@@ -270,7 +241,7 @@ test("GET /pay/email accepts equivalent status URL when the Shopify key matches"
       currency: "AOA",
       financialStatus: "PENDING",
       statusPageUrl:
-        "https://checkout.shopify.com/123/orders/abc/authenticate?key=secret-key",
+        "https://checkout.shopify.com/123/orders/abc/authenticate/?b=2&a=1",
     }),
     createPaymentSession: async (orderId) => ({
       paymentId: "payment-102",
@@ -283,9 +254,9 @@ test("GET /pay/email accepts equivalent status URL when the Shopify key matches"
     const handler = getRouteHandler(app.router, "get", "/pay/email");
     const req = {
       query: {
-        order_id: "102",
+        id: "102",
         order_status_url:
-          "https://store.example/orders/102?utm_source=email&key=secret-key",
+          "https://CHECKOUT.SHOPIFY.COM/123/orders/abc/authenticate?a=1&b=2",
       },
     };
     const res = createMockResponse();
@@ -302,49 +273,44 @@ test("GET /pay/email accepts equivalent status URL when the Shopify key matches"
   }
 });
 
-test("GET /pay/email accepts a signed hash without order_status_url", async () => {
-  await withEnv({ EMAIL_LINK_SECRET: "email-secret" }, async () => {
-    const { app, restore } = loadAppWithMocks({
-      getOrder: async () => ({
-        id: "gid://shopify/Order/104",
-        name: "#104",
-        amount: "500.00",
-        currency: "AOA",
-        financialStatus: "PENDING",
-        statusPageUrl:
-          "https://checkout.shopify.com/123/orders/abc/authenticate?key=expected-key",
-      }),
-      createPaymentSession: async () => ({
-        paymentId: "payment-104",
-        paymentUrl: "https://example.test/pay/payment-104",
-        expiresAt: "2026-03-02T12:00:00.000Z",
-      }),
-    });
-
-    try {
-      const handler = getRouteHandler(app.router, "get", "/pay/email");
-      const req = {
-        query: {
-          order_id: "104",
-          hash: crypto
-            .createHash("md5")
-            .update("104:email-secret")
-            .digest("hex"),
-        },
-      };
-      const res = createMockResponse();
-
-      await handler(req, res);
-
-      assert.equal(res.statusCode, 302);
-      assert.equal(res.redirectLocation, "https://example.test/pay/payment-104");
-    } finally {
-      restore();
-    }
+test("GET /pay/email accepts order_id alias for backward compatibility", async () => {
+  const { app, restore } = loadAppWithMocks({
+    getOrder: async () => ({
+      id: "gid://shopify/Order/104",
+      name: "#104",
+      amount: "500.00",
+      currency: "AOA",
+      financialStatus: "PENDING",
+      statusPageUrl: "https://checkout.shopify.com/123/orders/xyz/authenticate?key=abc",
+    }),
+    createPaymentSession: async () => ({
+      paymentId: "payment-104",
+      paymentUrl: "https://example.test/pay/payment-104",
+      expiresAt: "2026-03-02T12:00:00.000Z",
+    }),
   });
+
+  try {
+    const handler = getRouteHandler(app.router, "get", "/pay/email");
+    const req = {
+      query: {
+        order_id: "104",
+        order_status_url:
+          "https://checkout.shopify.com/123/orders/xyz/authenticate?key=abc",
+      },
+    };
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    assert.equal(res.statusCode, 302);
+    assert.equal(res.redirectLocation, "https://example.test/pay/payment-104");
+  } finally {
+    restore();
+  }
 });
 
-test("GET /pay/email rejects status URL when the Shopify key does not match", async () => {
+test("GET /pay/email rejects status URL when normalized URLs do not match", async () => {
   const { app, restore } = loadAppWithMocks({
     getOrder: async () => ({
       id: "gid://shopify/Order/103",
@@ -371,7 +337,58 @@ test("GET /pay/email rejects status URL when the Shopify key does not match", as
     await handler(req, res);
 
     assert.equal(res.statusCode, 401);
-    assert.equal(res.body, "Invalid order status URL");
+    assert.equal(res.body, "Invalid order_status_url");
+  } finally {
+    restore();
+  }
+});
+
+test("GET /pay/email requires an id or order_id", async () => {
+  const { app, restore } = loadAppWithMocks({
+    getOrder: async () => {
+      throw new Error("getOrder should not be called");
+    },
+  });
+
+  try {
+    const handler = getRouteHandler(app.router, "get", "/pay/email");
+    const req = {
+      query: {
+        order_status_url:
+          "https://checkout.shopify.com/123/orders/abc/authenticate?key=expected-key",
+      },
+    };
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.body, "Missing id or order_id");
+  } finally {
+    restore();
+  }
+});
+
+test("GET /pay/email requires order_status_url", async () => {
+  const { app, restore } = loadAppWithMocks({
+    getOrder: async () => {
+      throw new Error("getOrder should not be called");
+    },
+  });
+
+  try {
+    const handler = getRouteHandler(app.router, "get", "/pay/email");
+    const req = {
+      query: {
+        id: "105",
+      },
+    };
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.body, "Missing order_status_url");
   } finally {
     restore();
   }
