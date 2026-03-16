@@ -83,7 +83,7 @@ async function fetchOrderById({ shop, token, orderGid }) {
         id
         name
         createdAt
-        statusPageUrl(audience: CUSTOMERVIEW, notificationUsage: WEB)
+        statusPageUrl
         paymentGatewayNames
         displayFinancialStatus
         currentTotalPriceSet {

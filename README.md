@@ -79,6 +79,7 @@ This app's backend can now use OAuth token exchange instead of requiring a manua
    - `SHOPIFY_API_SECRET`
    - `SHOPIFY_SHOP` (for example `yvimv1-hc.myshopify.com`)
    - `APP_URL` (for example `https://zelaprime-mcx-payments-railway-production.up.railway.app`)
+   - `EMAIL_LINK_SECRET` (shared secret used to validate reusable payment links embedded in Shopify emails)
 1. Start OAuth install by visiting:
    - `GET /api/auth/install?shop=<your-shop>.myshopify.com`
 1. Shopify redirects to:
@@ -96,23 +97,6 @@ These optional environment variables control retries when Shopify order lookup i
 - `SHOPIFY_ORDER_LOOKUP_MAX_ATTEMPTS` (default: `4`)
 - `SHOPIFY_ORDER_LOOKUP_BASE_DELAY_MS` (default: `250`)
 - `SHOPIFY_ORDER_LOOKUP_MAX_DELAY_MS` (default: `2000`)
-
-### Reusable Shopify email payment link
-
-Use Shopify notification variables directly in the email template:
-
-```liquid
-<a target="_blank"
-   href="https://zelaprime-mcx-payments-railway-production.up.railway.app/pay/email?id={{ id }}&order_status_url={{ order_status_url | url_encode }}">
-  Complete payment
-</a>
-```
-
-Notes:
-
-- Use `id`, not `order.id`, in Shopify customer email templates.
-- `order_status_url` is required and should be URL-encoded when nested inside the payment link.
-- No custom hash or shared secret is required for the email flow.
 
 ## Developer resources
 

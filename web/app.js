@@ -1,4 +1,5 @@
 // web/app.js
+const crypto = require("crypto");
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
@@ -31,8 +32,39 @@ function buildOrderNotReadyResponse() {
   return { ...ORDER_NOT_READY_RESPONSE };
 }
 
-function getSingleQueryValue(value) {
-  return Array.isArray(value) ? value[0] : value;
+function getEmailLinkSecret() {
+  return String(process.env.EMAIL_LINK_SECRET || "").trim();
+}
+
+function buildEmailLinkHash(orderId, secret) {
+  return crypto
+    .createHash("md5")
+    .update(`${String(orderId || "")}:${String(secret || "")}`)
+    .digest("hex");
+}
+
+function secureCompare(left, right) {
+  const leftBuffer = Buffer.from(String(left || ""), "utf8");
+  const rightBuffer = Buffer.from(String(right || ""), "utf8");
+
+  if (leftBuffer.length === 0 || leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function hasValidEmailLinkHash(orderId, providedHash) {
+  const secret = getEmailLinkSecret();
+  if (!secret) {
+    return false;
+  }
+
+  const expectedHash = buildEmailLinkHash(orderId, secret);
+  return secureCompare(
+    expectedHash,
+    String(providedHash || "").trim().toLowerCase()
+  );
 }
 
 function normalizeStatusUrlPathname(pathname) {
@@ -56,21 +88,27 @@ function parseStatusUrl(rawUrl) {
 
     return {
       href: `${parsed.origin.toLowerCase()}${pathname}${search ? `?${search}` : ""}`,
+      pathname,
+      key: parsed.searchParams.get("key") || "",
     };
   } catch {
     return null;
   }
 }
 
-function compareOrderStatusUrls(expectedUrl, providedUrl) {
+function isMatchingOrderStatusUrl(expectedUrl, providedUrl) {
   const expected = parseStatusUrl(expectedUrl);
   const provided = parseStatusUrl(providedUrl);
 
-  return {
-    expectedParsed: Boolean(expected),
-    providedParsed: Boolean(provided),
-    matches: Boolean(expected && provided && expected.href === provided.href),
-  };
+  if (!expected || !provided) {
+    return false;
+  }
+
+  if (expected.href === provided.href) {
+    return true;
+  }
+
+  return Boolean(expected.key) && expected.key === provided.key;
 }
 
 // Initialize database on cold start (best effort)
@@ -225,50 +263,52 @@ app.use("/api/auth", shopifyAuthRouter);
 app.get("/pay/email", async (req, res) => {
   let orderGid = null;
   try {
-    const idParam = getSingleQueryValue(req.query.id);
-    const orderIdParam = getSingleQueryValue(req.query.order_id);
-    const statusUrlParam = getSingleQueryValue(req.query.order_status_url);
-    const requestContext = {
-      hasIdParam: Boolean(idParam),
-      hasOrderIdParam: Boolean(orderIdParam),
-      hasOrderStatusUrl: Boolean(statusUrlParam),
-    };
-    const orderIdParamValue = idParam || orderIdParam;
+    const orderIdParam = Array.isArray(req.query.order_id)
+      ? req.query.order_id[0]
+      : req.query.order_id;
+    const statusUrlParam = Array.isArray(req.query.order_status_url)
+      ? req.query.order_status_url[0]
+      : req.query.order_status_url;
+    const hashParam = Array.isArray(req.query.hash)
+      ? req.query.hash[0]
+      : req.query.hash;
+    const sigParam = Array.isArray(req.query.sig)
+      ? req.query.sig[0]
+      : req.query.sig;
+    const emailHashParam = hashParam || sigParam;
 
-    if (!orderIdParamValue) {
-      console.warn("Email payment link missing order identifier", requestContext);
-      return res.status(400).send("Missing id or order_id");
+    if (!orderIdParam || (!statusUrlParam && !emailHashParam)) {
+      return res.status(400).send("Missing order_id or email proof");
     }
 
-    if (!statusUrlParam) {
-      console.warn("Email payment link missing order_status_url", requestContext);
-      return res.status(400).send("Missing order_status_url");
-    }
-
-    const orderId = String(orderIdParamValue).trim();
-    const orderStatusUrl = String(statusUrlParam).trim();
+    const orderId = String(orderIdParam);
+    const orderStatusUrl = statusUrlParam ? String(statusUrlParam) : "";
+    const emailHash = emailHashParam ? String(emailHashParam) : "";
     orderGid = orderId.startsWith("gid://shopify/Order/")
       ? orderId
       : `gid://shopify/Order/${orderId}`;
 
-    const order = await shopifyClient.getOrder(orderGid);
-    if (!order?.statusPageUrl) {
-      console.warn("Email payment link missing customer status URL", requestContext);
-      return res.status(500).send("Order is missing customer status URL");
+    const hasValidHash = emailHash
+      ? hasValidEmailLinkHash(orderId, emailHash)
+      : false;
+
+    if (emailHash && !hasValidHash && !orderStatusUrl) {
+      if (!getEmailLinkSecret()) {
+        return res.status(500).send("Email payment link is not configured");
+      }
+      return res.status(401).send("Invalid email payment link");
     }
 
-    const statusUrlComparison = compareOrderStatusUrls(
-      order.statusPageUrl,
-      orderStatusUrl
-    );
-    if (!statusUrlComparison.matches) {
-      console.warn("Email payment link rejected", {
-        ...requestContext,
-        expectedStatusUrlParsed: statusUrlComparison.expectedParsed,
-        providedStatusUrlParsed: statusUrlComparison.providedParsed,
-        statusUrlMatched: statusUrlComparison.matches,
-      });
-      return res.status(401).send("Invalid order_status_url");
+    const order = await shopifyClient.getOrder(orderGid);
+    if (!hasValidHash && !order?.statusPageUrl) {
+      return res.status(400).send("Missing order status URL");
+    }
+
+    if (
+      !hasValidHash &&
+      !isMatchingOrderStatusUrl(order.statusPageUrl, orderStatusUrl)
+    ) {
+      return res.status(401).send("Invalid order status URL");
     }
 
     if (order.financialStatus !== "PENDING" && order.financialStatus !== "PARTIALLY_PAID") {
